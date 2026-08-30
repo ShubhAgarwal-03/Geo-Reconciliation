@@ -1,0 +1,5 @@
+sqlalchemy[asyncio]
+geoalchemy2
+asyncpg
+python-dotenv
+alembic
