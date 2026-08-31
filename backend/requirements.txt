@@ -3,3 +3,5 @@ geoalchemy2
 asyncpg
 python-dotenv
 alembic
+fastapi
+uvicorn[standard]

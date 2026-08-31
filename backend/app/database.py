@@ -7,10 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # Load environment variables from .env file
 load_dotenv()
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://geoai:geoai_dev_pw@localhost:5432/geoai_db",
-)
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is not set. Copy .env.example to .env and fill in your local database credentials."
+    )
 
 # Initialize SQLAlchemy 2.0 Async Engine
 engine = create_async_engine(

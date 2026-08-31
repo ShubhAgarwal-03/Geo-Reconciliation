@@ -23,10 +23,11 @@ if config.config_file_name:
 target_metadata = Base.metadata
 
 # Retrieve database URL from environment
-db_url = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://geoai:geoai_dev_pw@localhost:5432/geoai_db",
-)
+db_url = os.getenv("DATABASE_URL")
+if not db_url:
+    raise RuntimeError(
+        "DATABASE_URL is not set. Copy .env.example to .env and fill in your local database credentials."
+    )
 
 
 def include_object(object_, name, type_, reflected, compare_to):
