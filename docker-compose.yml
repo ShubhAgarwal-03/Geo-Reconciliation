@@ -1,0 +1,31 @@
+# docker-compose.yml
+#
+# Local PostGIS instance. Credentials/db name here MUST match
+# config.py's DB_DSN default (postgresql://postgres:postgres@localhost:5432/geo_reconciliation)
+# — if you change one, change the other, or set GEO_RECON_DB_DSN as an
+# env var to override config.py instead.
+#
+# Usage:
+#   docker compose up -d
+#   python -m db.apply_schema
+
+services:
+  postgis:
+    image: postgis/postgis:16-3.4
+    container_name: geo_reconciliation_postgis
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-geo_reconciliation}
+    ports:
+      - "5432:5432"
+    volumes:
+      - geo_reconciliation_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d geo_reconciliation"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  geo_reconciliation_pgdata:
