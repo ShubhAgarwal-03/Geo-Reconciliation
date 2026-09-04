@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { 
   BuildingEntity, 
+  BuildingStatus,
   Language 
 } from '../types';
 import { translations } from '../data/i18n';
@@ -8,43 +9,47 @@ import {
   AlertTriangle, 
   AlertOctagon, 
   CheckCircle2, 
-  Search, 
-  Filter, 
-  ArrowRight, 
   MapPin, 
   Eye, 
   Layers, 
-  Ruler, 
   Check, 
   X, 
   Edit3, 
-  Compass, 
   Send,
-  HelpCircle,
-  FileCheck
+  Loader2,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
+import { resolveEntity } from '../api/geoReconciliationClient';
 
 interface ReviewQueueViewProps {
   buildings: BuildingEntity[];
   onSelectBuildingOnMap: (building: BuildingEntity) => void;
   language: Language;
+  // Called after a real PATCH /entities/{id}/resolve succeeds, so the parent
+  // can update its local `buildings` state the same way handleApprove /
+  // handleReject already do in App.tsx. Pass App.tsx's `updateBuildingStatus`
+  // here.
+  onResolved: (id: string, status: BuildingStatus) => void;
 }
 
 export const ReviewQueueView: React.FC<ReviewQueueViewProps> = ({
   buildings,
   onSelectBuildingOnMap,
   language,
+  onResolved,
 }) => {
   const t = translations[language];
 
   // Filter only buildings that have conflict or review status
   const reviewItems = buildings.filter(b => b.status === 'conflict' || b.status === 'review');
+  const highCount = reviewItems.filter(b => b.status === 'conflict').length;
+  const mediumCount = reviewItems.filter(b => b.status === 'review').length;
 
   const [activeTab, setActiveTab] = useState<'all' | 'high' | 'medium'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedReviewBuilding, setSelectedReviewBuilding] = useState<BuildingEntity | null>(null);
   const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Selected source option if operator wants to override
   const [chosenSource, setChosenSource] = useState<string>('recommendation');
@@ -59,26 +64,56 @@ export const ReviewQueueView: React.FC<ReviewQueueViewProps> = ({
     return true;
   });
 
-  const handleAction = (actionType: 'accept' | 'source' | 'edit' | 'field') => {
+  const handleAction = async (actionType: 'accept' | 'source' | 'edit' | 'field') => {
     if (!selectedReviewBuilding) return;
+    const id = selectedReviewBuilding.id;
 
-    let msg = "";
-    if (actionType === 'accept') {
-      msg = `Accepted AI recommendation (${selectedReviewBuilding.conflictDetails?.recommendedArea || selectedReviewBuilding.area} m²) for ${selectedReviewBuilding.id}!`;
-      try {
-        confetti({ particleCount: 40, spread: 50 });
-      } catch (e) {}
-    } else if (actionType === 'source') {
-      msg = `Set active geometry from ${chosenSource.toUpperCase()} for ${selectedReviewBuilding.id}`;
-    } else if (actionType === 'edit') {
-      msg = `Opened vertex geometry editor for ${selectedReviewBuilding.id}`;
-    } else if (actionType === 'field') {
-      msg = `Task dispatched to Zonal Field Inspector with GNSS RTK Rover for ${selectedReviewBuilding.id}`;
+    // "Edit Geometry" and "Mark for Field Verification" have no backend
+    // support at all right now — PATCH /entities/{id}/resolve only accepts
+    // status + a free-text note. Faking success for these would just move
+    // the placeholder problem here instead of fixing it, so they stay
+    // clearly labeled as not-yet-implemented rather than pretending to work.
+    if (actionType === 'edit') {
+      setActionSuccessMessage('Geometry editor is not implemented yet — no backend endpoint exists for it.');
+      setTimeout(() => setActionSuccessMessage(null), 4000);
+      return;
+    }
+    if (actionType === 'field') {
+      setActionSuccessMessage('Field verification dispatch is not implemented yet — no backend endpoint exists for it.');
+      setTimeout(() => setActionSuccessMessage(null), 4000);
+      return;
     }
 
-    setActionSuccessMessage(msg);
-    setTimeout(() => setActionSuccessMessage(null), 4000);
-    setSelectedReviewBuilding(null);
+    setIsSubmitting(true);
+    try {
+      if (actionType === 'accept') {
+        await resolveEntity(id, { status: 'approved' });
+        onResolved(id, 'reconciled');
+        setActionSuccessMessage(
+          `Accepted recommendation for ${id} (${selectedReviewBuilding.conflictDetails?.recommendedArea || selectedReviewBuilding.area} m²)`
+        );
+        try {
+          confetti({ particleCount: 40, spread: 50 });
+        } catch (e) {
+          // non-critical decoration; ignore if canvas-confetti fails silently
+        }
+      } else if (actionType === 'source') {
+        // The backend has no dedicated "use this source's geometry" endpoint —
+        // resolve only takes status + note. Recording the chosen source in
+        // `note` is the closest honest mapping onto what actually exists.
+        await resolveEntity(id, { status: 'edited', note: `source_override:${chosenSource}` });
+        onResolved(id, 'reconciled');
+        setActionSuccessMessage(`Recorded source override (${chosenSource}) for ${id}`);
+      }
+      setSelectedReviewBuilding(null);
+    } catch (e) {
+      console.error(`Failed to resolve entity ${id}`, e);
+      setActionSuccessMessage(null);
+      alert(e instanceof Error ? e.message : 'Failed to resolve entity');
+    } finally {
+      setIsSubmitting(false);
+      setTimeout(() => setActionSuccessMessage(null), 4000);
+    }
   };
 
   return (
@@ -92,7 +127,7 @@ export const ReviewQueueView: React.FC<ReviewQueueViewProps> = ({
               {t.reviewRequired}
             </h2>
             <span className="text-[11px] font-bold bg-[#FFF9F0] text-[#B07D3E] border border-[#F3E1C6] px-3 py-0.5 rounded-full">
-              37 cases
+              {reviewItems.length} cases
             </span>
           </div>
           <p className="text-sm text-[#5E6660] mt-1">
@@ -107,21 +142,21 @@ export const ReviewQueueView: React.FC<ReviewQueueViewProps> = ({
               onClick={() => setActiveTab('all')}
               className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'all' ? 'bg-white text-[#1B2B1F] shadow-2xs' : 'text-[#5E6660] hover:text-[#1B2B1F]'}`}
             >
-              All (37)
+              All ({reviewItems.length})
             </button>
             <button
               onClick={() => setActiveTab('high')}
               className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1 ${activeTab === 'high' ? 'bg-[#D66D54] text-white shadow-2xs' : 'text-[#D66D54] hover:bg-[#FDF2F0]'}`}
             >
               <span className="w-2 h-2 rounded-full bg-[#D66D54]"></span>
-              High Conflict (11)
+              High Conflict ({highCount})
             </button>
             <button
               onClick={() => setActiveTab('medium')}
               className={`px-3 py-1.5 rounded-lg transition flex items-center gap-1 ${activeTab === 'medium' ? 'bg-[#B07D3E] text-white shadow-2xs' : 'text-[#B07D3E] hover:bg-[#FFF9F0]'}`}
             >
               <span className="w-2 h-2 rounded-full bg-[#D9A05B]"></span>
-              Medium (26)
+              Medium ({mediumCount})
             </button>
           </div>
         </div>
@@ -264,7 +299,8 @@ export const ReviewQueueView: React.FC<ReviewQueueViewProps> = ({
 
               <button
                 onClick={() => setSelectedReviewBuilding(null)}
-                className="p-2 rounded-xl text-[#5E6660] hover:text-[#1B2B1F] hover:bg-[#F1F3F0] transition"
+                disabled={isSubmitting}
+                className="p-2 rounded-xl text-[#5E6660] hover:text-[#1B2B1F] hover:bg-[#F1F3F0] transition disabled:opacity-40"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -280,7 +316,7 @@ export const ReviewQueueView: React.FC<ReviewQueueViewProps> = ({
                   {selectedReviewBuilding.conflictDetails?.simplifiedReason || "Building boundaries differ between cadastral and municipal sources."}
                 </p>
                 <div className="mt-2 text-[11px] text-[#8F632D] font-mono bg-white/80 p-2 rounded-lg border border-[#F3E1C6]/60">
-                  {selectedReviewBuilding.conflictDetails?.technicalReason || "IoU variance 0.74, centroid offset 2.3m."}
+                  {selectedReviewBuilding.conflictDetails?.technicalReason || "No per-entity technical breakdown available from the backend yet."}
                 </div>
               </div>
 
@@ -293,9 +329,6 @@ export const ReviewQueueView: React.FC<ReviewQueueViewProps> = ({
                     <div className="flex items-center justify-between pb-2 border-b border-[#E8E6E1] mb-3">
                       <span className="text-xs font-bold text-[#D66D54] uppercase tracking-wider">
                         LEFT: Source Geometries
-                      </span>
-                      <span className="text-[10px] bg-white border border-[#E8E6E1] text-[#5E6660] px-2 py-0.5 rounded-full font-mono">
-                        3-4 Inconsistent Outlines
                       </span>
                     </div>
 
@@ -333,21 +366,9 @@ export const ReviewQueueView: React.FC<ReviewQueueViewProps> = ({
                         <span className="font-mono font-bold text-[#1B2B1F]">{selectedReviewBuilding.sources.ori.area} m²</span>
                       </div>
                     </div>
-                  </div>
-
-                  {/* SVG mini overlay illustration */}
-                  <div className="h-32 bg-white rounded-xl mt-3 flex items-center justify-center relative overflow-hidden border border-[#E8E6E1]">
-                    <svg viewBox="0 0 100 100" className="w-24 h-24">
-                      {/* Cadastral */}
-                      <rect x="20" y="20" width="60" height="60" fill="none" stroke="#7D6D8A" strokeWidth="2" strokeDasharray="3,2" />
-                      {/* Municipal */}
-                      <rect x="16" y="24" width="68" height="56" fill="none" stroke="#4A6D7C" strokeWidth="2" />
-                      {/* AI */}
-                      <rect x="22" y="22" width="58" height="58" fill="none" stroke="#3A5A40" strokeWidth="1.5" />
-                    </svg>
-                    <span className="absolute bottom-2 text-[10px] text-[#5E6660] font-mono">
-                      Max boundary offset: 2.3m
-                    </span>
+                    <p className="text-[10px] text-[#A3A9A5] mt-2 leading-snug">
+                      Note: the backend doesn't yet return separate per-source polygons — present sources currently reuse the reconciled area figure. See adapter.ts.
+                    </p>
                   </div>
                 </div>
 
@@ -357,9 +378,6 @@ export const ReviewQueueView: React.FC<ReviewQueueViewProps> = ({
                     <div className="flex items-center justify-between pb-2 border-b border-[#BDC9BF]/60 mb-3">
                       <span className="text-xs font-bold text-[#3A5A40] uppercase tracking-wider">
                         RIGHT: Reconciled Geometry
-                      </span>
-                      <span className="text-[10px] bg-white border border-[#BDC9BF] text-[#4A7C44] px-2 py-0.5 rounded-full font-bold">
-                        AI Recommended
                       </span>
                     </div>
 
@@ -375,21 +393,6 @@ export const ReviewQueueView: React.FC<ReviewQueueViewProps> = ({
                         </span>
                       </div>
                     </div>
-
-                    <p className="text-xs text-[#5E6660] leading-relaxed">
-                      Removes roof eave overhang from Municipal tax footprint, aligning strictly with Revenue Cadastral legal corner markers and 5cm Drone ground truth.
-                    </p>
-                  </div>
-
-                  {/* SVG mini reconciled illustration */}
-                  <div className="h-32 bg-white rounded-xl mt-3 flex items-center justify-center relative overflow-hidden border border-[#BDC9BF]">
-                    <svg viewBox="0 0 100 100" className="w-24 h-24">
-                      <rect x="21" y="21" width="58" height="58" fill="#3A5A40" fillOpacity="0.2" stroke="#3A5A40" strokeWidth="2.5" />
-                      <circle cx="50" cy="50" r="3" fill="#3A5A40" />
-                    </svg>
-                    <span className="absolute bottom-2 text-[10px] text-[#4A7C44] font-mono font-semibold">
-                      Consensus boundary normalized
-                    </span>
                   </div>
                 </div>
 
@@ -406,23 +409,27 @@ export const ReviewQueueView: React.FC<ReviewQueueViewProps> = ({
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={() => handleAction('accept')}
-                  className="px-4 py-2 bg-[#3A5A40] hover:bg-[#2D4632] text-white rounded-xl text-xs font-bold shadow-sm transition active:scale-95 flex items-center gap-1.5"
+                  disabled={isSubmitting}
+                  className="px-4 py-2 bg-[#3A5A40] hover:bg-[#2D4632] text-white rounded-xl text-xs font-bold shadow-sm transition active:scale-95 flex items-center gap-1.5 disabled:opacity-50"
                 >
-                  <Check className="w-4 h-4" />
+                  {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
                   <span>Accept Recommendation</span>
                 </button>
 
                 <button
                   onClick={() => handleAction('source')}
-                  className="px-3.5 py-2 bg-[#F1F3F0] hover:bg-[#E8E6E1] text-[#2D312E] rounded-xl text-xs font-bold transition flex items-center gap-1.5"
+                  disabled={isSubmitting}
+                  className="px-3.5 py-2 bg-[#F1F3F0] hover:bg-[#E8E6E1] text-[#2D312E] rounded-xl text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50"
                 >
                   <Layers className="w-3.5 h-3.5" />
-                  <span>Select Source</span>
+                  <span>Select Source ({chosenSource})</span>
                 </button>
 
                 <button
                   onClick={() => handleAction('edit')}
-                  className="px-3.5 py-2 bg-[#F1F3F0] hover:bg-[#E8E6E1] text-[#2D312E] rounded-xl text-xs font-bold transition flex items-center gap-1.5"
+                  disabled={isSubmitting}
+                  className="px-3.5 py-2 bg-[#F1F3F0] hover:bg-[#E8E6E1] text-[#2D312E] rounded-xl text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50"
+                  title="Not implemented — no backend endpoint exists yet"
                 >
                   <Edit3 className="w-3.5 h-3.5" />
                   <span>Edit Geometry</span>
@@ -430,7 +437,9 @@ export const ReviewQueueView: React.FC<ReviewQueueViewProps> = ({
 
                 <button
                   onClick={() => handleAction('field')}
-                  className="px-3.5 py-2 bg-[#FFF9F0] hover:bg-[#FDF2F0] text-[#B07D3E] border border-[#F3E1C6] rounded-xl text-xs font-bold transition flex items-center gap-1.5"
+                  disabled={isSubmitting}
+                  className="px-3.5 py-2 bg-[#FFF9F0] hover:bg-[#FDF2F0] text-[#B07D3E] border border-[#F3E1C6] rounded-xl text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50"
+                  title="Not implemented — no backend endpoint exists yet"
                 >
                   <Send className="w-3.5 h-3.5" />
                   <span>Mark for Field Verification</span>
