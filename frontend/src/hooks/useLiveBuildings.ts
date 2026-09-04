@@ -12,6 +12,7 @@ import { BuildingEntity } from '../types';
 import { generateGridBuildings } from '../data/mockBuildings';
 import { fetchEntities, fetchReviewQueue, BBox } from '../api/geoReconciliationClient';
 import { adaptEntitySummary } from '../api/adapter';
+import { fetchOsmFallbackBuildings } from '../data/fetchOsmFallbackBuildings';
 
 // Matches config.DISTRICT_BBOX in the backend repo (Koramangala + HSR +
 // Indiranagar demo district). Update this if that changes.
@@ -22,7 +23,14 @@ export const DEFAULT_BBOX: BBox = {
   maxLat: 12.99,
 };
 
-export type DataSource = 'live' | 'mock';
+// 'live'      — real reconciled entities from the Geo-Reconciliation backend.
+// 'osm'       — real building footprints fetched straight from OpenStreetMap
+//               in the browser (real positions, but single-source/unreconciled
+//               — see fetchOsmFallbackBuildings.ts).
+// 'mock'      — fully synthetic procedural grid; last-resort only, used when
+//               both the backend AND OpenStreetMap are unreachable (e.g. no
+//               network at all).
+export type DataSource = 'live' | 'osm' | 'mock';
 
 interface UseLiveBuildingsResult {
   buildings: BuildingEntity[];
@@ -45,27 +53,44 @@ export function useLiveBuildings(bbox: BBox = DEFAULT_BBOX): UseLiveBuildingsRes
     async function load() {
       setLoading(true);
       setError(null);
+
+      // Tier 1: the real reconciliation backend.
       try {
         const entities = await fetchEntities(bbox);
         if (cancelled) return;
-
-        if (entities.length === 0) {
-          // API reachable but no data ingested yet — fall back to mock so
-          // the UI still demos, but flag it via `source`.
-          setBuildings(generateGridBuildings());
-          setSource('mock');
-        } else {
+        if (entities.length > 0) {
           setBuildings(entities.map(adaptEntitySummary));
           setSource('live');
+          setLoading(false);
+          return;
         }
+        // Backend reachable but nothing ingested yet — fall through to
+        // OSM rather than immediately giving up on real data.
       } catch (e) {
         if (cancelled) return;
-        console.warn('Geo-Reconciliation API unreachable, using mock data:', e);
+        console.warn('Geo-Reconciliation API unreachable, trying OSM fallback:', e);
+        setError(e instanceof Error ? e.message : String(e));
+      }
+
+      // Tier 2: real OSM building footprints (real positions, unreconciled).
+      try {
+        const osmBuildings = await fetchOsmFallbackBuildings(bbox);
+        if (cancelled) return;
+        setBuildings(osmBuildings);
+        setSource('osm');
+        setLoading(false);
+        return;
+      } catch (e) {
+        if (cancelled) return;
+        console.warn('OSM fallback also unreachable, using synthetic demo grid:', e);
+      }
+
+      // Tier 3: fully synthetic grid — only reached with no network path to
+      // either real source at all.
+      if (!cancelled) {
         setBuildings(generateGridBuildings());
         setSource('mock');
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (!cancelled) setLoading(false);
+        setLoading(false);
       }
     }
 

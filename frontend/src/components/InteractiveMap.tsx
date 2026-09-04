@@ -21,11 +21,12 @@ import { translations } from '../data/i18n';
 
 // CARTO's free basemaps.cartocdn.com raster tiles started requiring an API
 // key as of late Aug 2026 — unauthenticated requests now render an
-// "API KEY REQUIRED" watermark instead of the map. Esri's Street Map raster
-// tiles are keyless with no such gate, so we use those for the street
-// basemap instead (satellite mode already used Esri and was never affected).
-const STREET_TILE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}';
-const STREET_TILE_OPTIONS = { maxZoom: 19 };
+// "API KEY REQUIRED" watermark instead of the map. Standard OpenStreetMap
+// tiles are the most durable keyless option (no account, no key, ever) so
+// we use those for the street basemap. Satellite mode stays on Esri, which
+// has remained keyless throughout.
+const STREET_TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+const STREET_TILE_OPTIONS = { maxZoom: 19, subdomains: 'abc' };
 
 interface InteractiveMapProps {
   buildings: BuildingEntity[];
@@ -35,9 +36,9 @@ interface InteractiveMapProps {
   onOpenReconcileModal: () => void;
   onOpenUploadModal: () => void;
   activeFilter?: 'all' | 'reconciled' | 'review' | 'conflict';
-  /** 'live' vs 'mock' — used only to know when the underlying dataset has
-   *  genuinely changed (so the map re-fits bounds), not for styling. */
-  dataSource?: 'live' | 'mock';
+  /** 'live' | 'osm' | 'mock' — used only to know when the underlying dataset
+   *  has genuinely changed (so the map re-fits bounds), not for styling. */
+  dataSource?: 'live' | 'osm' | 'mock';
 }
 
 export const InteractiveMap: React.FC<InteractiveMapProps> = ({
@@ -93,11 +94,18 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
       center: [12.9784, 77.6408],
       zoom: 17,
       zoomControl: false,
-      attributionControl: false,
+      // OpenStreetMap's tile usage policy requires visible attribution —
+      // this was silently missing before (CARTO/Esri credit was never shown
+      // either), fixed here rather than carried forward.
+      attributionControl: true,
     });
+    map.attributionControl.setPrefix(false);
 
-    // Street tiles — see STREET_TILE_URL comment above for why Esri, not CARTO.
-    const streetTiles = L.tileLayer(STREET_TILE_URL, STREET_TILE_OPTIONS);
+    // Street tiles — see STREET_TILE_URL comment above for why OSM, not CARTO.
+    const streetTiles = L.tileLayer(STREET_TILE_URL, {
+      ...STREET_TILE_OPTIONS,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    });
 
     streetTiles.addTo(map);
     tileLayerRef.current = streetTiles;
@@ -128,11 +136,15 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
     if (mapMode === 'satellite') {
       const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
         maxZoom: 19,
+        attribution: 'Tiles &copy; Esri',
       });
       sat.addTo(mapInstanceRef.current);
       tileLayerRef.current = sat;
     } else {
-      const streets = L.tileLayer(STREET_TILE_URL, STREET_TILE_OPTIONS);
+      const streets = L.tileLayer(STREET_TILE_URL, {
+        ...STREET_TILE_OPTIONS,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      });
       streets.addTo(mapInstanceRef.current);
       tileLayerRef.current = streets;
     }
@@ -373,7 +385,7 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
                 <div className="flex items-center justify-between pb-2 border-b border-[#F1F3F0] mb-3">
                   <span className="text-xs font-bold uppercase tracking-wider text-[#A3A9A5]">{t.dataLayers}</span>
                   <span className="text-[10px] bg-[#F1F3F0] text-[#5E6660] font-bold px-2 py-0.5 rounded-full">
-                    {dataSource === 'live' ? 'Live' : 'Demo'}
+                    {dataSource === 'live' ? 'Live' : dataSource === 'osm' ? 'OSM Reference' : 'Demo'}
                   </span>
                 </div>
 

@@ -26,7 +26,7 @@ import { InteractiveMap } from './InteractiveMap';
 interface DashboardViewProps {
   buildings: BuildingEntity[];
   stats: ReconciliationStats;
-  dataSource: 'live' | 'mock';
+  dataSource: 'live' | 'osm' | 'mock';
   activityLog: ActivityEntry[];
   showcaseBuilding: BuildingEntity | null;
   selectedBuilding: BuildingEntity | null;
@@ -109,10 +109,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <Wifi className="w-3 h-3 text-[#4A7C44]" />
                   Connected to live Geo-Reconciliation API
                 </>
+              ) : dataSource === 'osm' ? (
+                <>
+                  <Wifi className="w-3 h-3 text-[#B07D3E]" />
+                  Backend unreachable — showing real OpenStreetMap footprints, unreconciled
+                </>
               ) : (
                 <>
                   <WifiOff className="w-3 h-3 text-[#B07D3E]" />
-                  API unreachable — showing local demo data
+                  API and OpenStreetMap both unreachable — showing local demo data
                 </>
               )}
             </span>
@@ -377,7 +382,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
             <div className="pt-3 border-t border-[#F1F3F0] mt-3 text-center">
               <span className="text-[11px] font-semibold text-[#5E6660]">
-                {dataSource === 'live' ? 'Connected to Geo-Reconciliation API' : 'Running on local demo data'}
+                {dataSource === 'live'
+                  ? 'Connected to Geo-Reconciliation API'
+                  : dataSource === 'osm'
+                  ? 'Showing real OpenStreetMap footprints (unreconciled)'
+                  : 'Running on local demo data'}
               </span>
             </div>
           </div>
