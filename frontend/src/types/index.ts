@@ -97,6 +97,13 @@ export interface ReconciliationStats {
   afterAvgConfidence: number;
 }
 
+export interface ActivityEntry {
+  id: string;
+  timestamp: number; // real Date.now(), not an invented "X mins ago" string
+  type: 'success' | 'warning' | 'verified' | 'info';
+  title: string;
+}
+
 export type ActiveTab = 'dashboard' | 'map' | 'data' | 'review' | 'reports';
 
 export type Language = 'en' | 'hi';

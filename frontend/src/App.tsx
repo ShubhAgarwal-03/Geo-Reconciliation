@@ -4,7 +4,8 @@ import {
   ActiveTab, 
   Language, 
   UploadedFile, 
-  ReconciliationStats 
+  ReconciliationStats,
+  ActivityEntry,
 } from './types';
 import { 
   generateGridBuildings, 
@@ -45,8 +46,37 @@ export default function App() {
   React.useEffect(() => {
     setBuildings(liveBuildings);
   }, [liveBuildings]);
+
+    // `stats` still seeds a handful of fields with no real backend source at
+    // all (conflictsDetected, autoResolved, before/after confidence & conflict
+    // counts — pipeline_runs doesn't store these, see reconcile.py). Those
+    // stay demo-baseline values and are clearly labeled as such in the UI.
     const [stats, setStats] = useState<ReconciliationStats>(initialStats);
     const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>(initialUploadedFiles);
+
+  // The four dashboard headline numbers, real-derived from the actual
+  // buildings array on every render — never trusted from mock `stats`.
+  // Only conflictsDetected/autoResolved/before-after fields (no backend
+  // source yet) fall through from `stats`.
+  const derivedStats = React.useMemo<ReconciliationStats>(() => {
+    const totalBuildings = buildings.length;
+    const matched = buildings.filter(b => b.status === 'reconciled').length;
+    const requiresReview = buildings.filter(b => b.status === 'review' || b.status === 'conflict').length;
+    const averageConfidence = totalBuildings > 0
+      ? Math.round(buildings.reduce((sum, b) => sum + b.confidence, 0) / totalBuildings)
+      : 0;
+    return { ...stats, totalBuildings, matched, requiresReview, averageConfidence };
+  }, [buildings, stats]);
+
+    // Real session activity log — populated by actions below (approve,
+    // reject, upload, reconcile), not a static fake feed.
+    const [activityLog, setActivityLog] = useState<ActivityEntry[]>([]);
+    const logActivity = (entry: Omit<ActivityEntry, 'id' | 'timestamp'>) => {
+      setActivityLog(prev => [
+        { id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, timestamp: Date.now(), ...entry },
+        ...prev,
+      ].slice(0, 20));
+    };
 
   // Selection & Modal States
   const [selectedBuilding, setSelectedBuilding] = useState<BuildingEntity | null>(() => {
@@ -94,9 +124,10 @@ const handleApprove = async (id: string) => {
   try {
     await resolveEntity(id, { status: 'approved' });
     updateBuildingStatus(id, 'reconciled');
+    logActivity({ type: 'success', title: `Building #${id} approved and reconciled` });
   } catch (e) {
     console.error('Failed to approve entity', id, e);
-    // Optionally surface a toast/error here — no error UI exists yet in this component.
+    logActivity({ type: 'warning', title: `Failed to approve #${id} — ${e instanceof Error ? e.message : 'request failed'}` });
   } finally {
     setIsResolving(false);
   }
@@ -107,8 +138,10 @@ const handleReject = async (id: string) => {
   try {
     await resolveEntity(id, { status: 'rejected' });
     updateBuildingStatus(id, 'conflict');
+    logActivity({ type: 'warning', title: `Building #${id} rejected — flagged as conflict` });
   } catch (e) {
     console.error('Failed to reject entity', id, e);
+    logActivity({ type: 'warning', title: `Failed to reject #${id} — ${e instanceof Error ? e.message : 'request failed'}` });
   } finally {
     setIsResolving(false);
   }
@@ -119,12 +152,15 @@ const handleReject = async (id: string) => {
   canonical_entity_count?: number | null;
   review_queue_count?: number | null;
 }) => {
+  // NOTE: totalBuildings/requiresReview are NOT set here anymore — they're
+  // always derived live from the real `buildings` array in `derivedStats`
+  // below, so setting them from the reconcile response would just be a
+  // second, possibly-stale source of truth for the same numbers.
   if (result) {
-    setStats(prev => ({
-      ...prev,
-      totalBuildings: result.canonical_entity_count ?? prev.totalBuildings,
-      requiresReview: result.review_queue_count ?? prev.requiresReview,
-    }));
+    logActivity({
+      type: 'verified',
+      title: `Reconciliation run complete — ${result.canonical_entity_count ?? '?'} entities, ${result.review_queue_count ?? 0} flagged for review`,
+    });
   }
   // Pull the freshly reconciled entities into the map/dashboard.
   refetchBuildings();
@@ -132,6 +168,7 @@ const handleReject = async (id: string) => {
 
   const handleAddFile = (newFile: UploadedFile) => {
     setUploadedFiles(prev => [newFile, ...prev]);
+    logActivity({ type: 'info', title: `Uploaded ${newFile.name} (${newFile.status})` });
   };
 
   // Target showcase building for the demo tour
@@ -155,7 +192,7 @@ const handleReject = async (id: string) => {
           setActiveTab(tab);
         }}
         language={language}
-        reviewCount={stats.requiresReview}
+        reviewCount={derivedStats.requiresReview}
       />
 
       {/* 3. Main Dynamic Content Views */}
@@ -165,7 +202,7 @@ const handleReject = async (id: string) => {
         {showBeforeAfterDirect ? (
           <BeforeAfterView
             buildings={buildings}
-            stats={stats}
+            stats={derivedStats}
             language={language}
             onGoToMap={() => {
               setShowBeforeAfterDirect(false);
@@ -178,7 +215,10 @@ const handleReject = async (id: string) => {
             {activeTab === 'dashboard' && (
               <DashboardView
                 buildings={buildings}
-                stats={stats}
+                stats={derivedStats}
+                dataSource={dataSource}
+                activityLog={activityLog}
+                showcaseBuilding={showcaseBuilding}
                 selectedBuilding={selectedBuilding}
                 onSelectBuilding={handleSelectBuilding}
                 language={language}
@@ -239,6 +279,10 @@ const handleReject = async (id: string) => {
               <ReviewQueueView
                 buildings={buildings}
                 onSelectBuildingOnMap={handleSelectBuildingOnMap}
+                onResolved={(id, status) => {
+                  updateBuildingStatus(id, status);
+                  logActivity({ type: 'success', title: `Building #${id} resolved from review queue` });
+                }}
                 language={language}
               />
             )}
@@ -247,7 +291,7 @@ const handleReject = async (id: string) => {
             {activeTab === 'reports' && (
               <ReportsView
                 buildings={buildings}
-                stats={stats}
+                stats={derivedStats}
                 language={language}
               />
             )}
