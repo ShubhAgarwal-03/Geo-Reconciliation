@@ -19,6 +19,14 @@ import {
 import { BuildingEntity, Language } from '../types';
 import { translations } from '../data/i18n';
 
+// CARTO's free basemaps.cartocdn.com raster tiles started requiring an API
+// key as of late Aug 2026 — unauthenticated requests now render an
+// "API KEY REQUIRED" watermark instead of the map. Esri's Street Map raster
+// tiles are keyless with no such gate, so we use those for the street
+// basemap instead (satellite mode already used Esri and was never affected).
+const STREET_TILE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}';
+const STREET_TILE_OPTIONS = { maxZoom: 19 };
+
 interface InteractiveMapProps {
   buildings: BuildingEntity[];
   selectedBuilding: BuildingEntity | null;
@@ -88,11 +96,8 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
       attributionControl: false,
     });
 
-    // Street tiles
-    const streetTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-      maxZoom: 20,
-      subdomains: 'abcd',
-    });
+    // Street tiles — see STREET_TILE_URL comment above for why Esri, not CARTO.
+    const streetTiles = L.tileLayer(STREET_TILE_URL, STREET_TILE_OPTIONS);
 
     streetTiles.addTo(map);
     tileLayerRef.current = streetTiles;
@@ -127,10 +132,7 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
       sat.addTo(mapInstanceRef.current);
       tileLayerRef.current = sat;
     } else {
-      const streets = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-        maxZoom: 20,
-        subdomains: 'abcd',
-      });
+      const streets = L.tileLayer(STREET_TILE_URL, STREET_TILE_OPTIONS);
       streets.addTo(mapInstanceRef.current);
       tileLayerRef.current = streets;
     }
