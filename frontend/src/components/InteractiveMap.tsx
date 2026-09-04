@@ -27,6 +27,9 @@ interface InteractiveMapProps {
   onOpenReconcileModal: () => void;
   onOpenUploadModal: () => void;
   activeFilter?: 'all' | 'reconciled' | 'review' | 'conflict';
+  /** 'live' vs 'mock' — used only to know when the underlying dataset has
+   *  genuinely changed (so the map re-fits bounds), not for styling. */
+  dataSource?: 'live' | 'mock';
 }
 
 export const InteractiveMap: React.FC<InteractiveMapProps> = ({
@@ -37,6 +40,7 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
   onOpenReconcileModal,
   onOpenUploadModal,
   activeFilter = 'all',
+  dataSource = 'mock',
 }) => {
   const t = translations[language];
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -44,24 +48,33 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
   const polygonLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const cadastralLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const municipalLayerGroupRef = useRef<L.LayerGroup | null>(null);
-  const roadsLayerGroupRef = useRef<L.LayerGroup | null>(null);
-  const gnssLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
+  // Tracks whether we've already auto-fit the map to real data once, so we
+  // don't yank the user's pan/zoom on every re-render — only on genuinely
+  // new datasets (mock → live swap, or first load).
+  const lastFitKeyRef = useRef<string>('');
 
   const [mapMode, setMapMode] = useState<'streets' | 'satellite'>('streets');
   const [searchQuery, setSearchQuery] = useState('');
   const [showLayersDropdown, setShowLayersDropdown] = useState(false);
   const [activeLayers, setActiveLayers] = useState({
-    imagery: true,
-    buildings: true,
-    cadastral: true,
-    roads: true,
-    gnss: true,
-    municipal: false,
+    // The only two layers below with per-source geometry distinct from the
+    // reconciled polygon would be cadastral/municipal — but the backend
+    // (canonical_entities) doesn't return separate per-source geometry yet,
+    // only which sources contributed. So those two stay off by default and
+    // are disabled in the panel with an explanation, rather than drawing a
+    // second outline that's secretly identical to the first.
     reconciled: true,
+    cadastral: false,
+    municipal: false,
   });
 
   const [statusFilter, setStatusFilter] = useState<'all' | 'reconciled' | 'review' | 'conflict'>(activeFilter);
+
+  // Real check against the loaded data — not assumed true. Only meaningful
+  // once the backend starts returning distinct per-source geometry.
+  const hasCadastralGeometry = buildings.some((b) => b.sources.cadastral.coordinates.length > 0);
+  const hasMunicipalGeometry = buildings.some((b) => b.sources.municipal.coordinates.length > 0);
 
   // Initialize Map
   useEffect(() => {
@@ -88,20 +101,12 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
     const polyGroup = L.layerGroup().addTo(map);
     const cadGroup = L.layerGroup().addTo(map);
     const munGroup = L.layerGroup().addTo(map);
-    const roadGroup = L.layerGroup().addTo(map);
-    const gnssGroup = L.layerGroup().addTo(map);
 
     polygonLayerGroupRef.current = polyGroup;
     cadastralLayerGroupRef.current = cadGroup;
     municipalLayerGroupRef.current = munGroup;
-    roadsLayerGroupRef.current = roadGroup;
-    gnssLayerGroupRef.current = gnssGroup;
 
     mapInstanceRef.current = map;
-
-    // Draw simulated road lines & GNSS survey monuments
-    renderRoads(roadGroup);
-    renderGNSSMarkers(gnssGroup);
 
     return () => {
       map.remove();
@@ -130,45 +135,6 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
       tileLayerRef.current = streets;
     }
   }, [mapMode]);
-
-  // Roads generator
-  const renderRoads = (group: L.LayerGroup) => {
-    group.clearLayers();
-    // Two main intersecting avenues
-    const mainAvenue: [number, number][] = [
-      [12.9810, 77.6380],
-      [12.9750, 77.6435],
-    ];
-    const crossStreet: [number, number][] = [
-      [12.9755, 77.6375],
-      [12.9805, 77.6440],
-    ];
-
-    L.polyline(mainAvenue, { color: '#94a3b8', weight: 6, opacity: 0.6, dashArray: '4, 4' }).addTo(group);
-    L.polyline(crossStreet, { color: '#94a3b8', weight: 5, opacity: 0.6, dashArray: '4, 4' }).addTo(group);
-  };
-
-  // GNSS CORS benchmarks
-  const renderGNSSMarkers = (group: L.LayerGroup) => {
-    group.clearLayers();
-    const corsPoints: { lat: number; lng: number; code: string }[] = [
-      { lat: 12.9790, lng: 77.6400, code: "CORS-BLR-04" },
-      { lat: 12.9765, lng: 77.6425, code: "GT-BENCH-12" },
-      { lat: 12.9802, lng: 77.6420, code: "SOI-MON-89" },
-    ];
-
-    corsPoints.forEach(pt => {
-      const marker = L.circleMarker([pt.lat, pt.lng], {
-        radius: 5,
-        fillColor: '#0ea5e9',
-        color: '#ffffff',
-        weight: 2,
-        fillOpacity: 1,
-      });
-      marker.bindTooltip(`📍 GNSS Benchmark: ${pt.code}`, { direction: 'top', className: 'text-xs font-semibold' });
-      marker.addTo(group);
-    });
-  };
 
   // Render Building Polygons and Cadastral / Municipal Overlays
   useEffect(() => {
@@ -243,8 +209,11 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
         polygon.addTo(polyGroup);
       }
 
-      // Cadastral Layer (Muted Violet outline)
-      if (activeLayers.cadastral && building.sources.cadastral) {
+      // Cadastral Layer (Muted Violet outline). Guard on actual presence —
+      // `building.sources.cadastral` is always a defined object (adapter.ts
+      // fills it with sourceName: 'not captured' when absent), so checking
+      // its truthiness alone would try to draw an empty polygon.
+      if (activeLayers.cadastral && building.sources.cadastral.coordinates.length > 0) {
         const cadPoly = L.polygon(building.sources.cadastral.coordinates, {
           color: '#7D6D8A',
           weight: 1.2,
@@ -255,8 +224,8 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
         cadPoly.addTo(cadGroup);
       }
 
-      // Municipal GIS Layer (Muted Slate Blue outline)
-      if (activeLayers.municipal && building.sources.municipal) {
+      // Municipal GIS Layer (Muted Slate Blue outline). Same guard as above.
+      if (activeLayers.municipal && building.sources.municipal.coordinates.length > 0) {
         const munPoly = L.polygon(building.sources.municipal.coordinates, {
           color: '#4A6D7C',
           weight: 1.2,
@@ -266,23 +235,26 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
         munPoly.addTo(munGroup);
       }
     });
-  }, [buildings, selectedBuilding, activeLayers, statusFilter, searchQuery]);
 
-  // Handle Layer Toggle Visibilities
-  useEffect(() => {
-    if (!mapInstanceRef.current) return;
-    const map = mapInstanceRef.current;
-
-    if (roadsLayerGroupRef.current) {
-      if (activeLayers.roads) map.addLayer(roadsLayerGroupRef.current);
-      else map.removeLayer(roadsLayerGroupRef.current);
+    // Auto-fit the map to the real loaded data — once per distinct dataset,
+    // not on every render (so panning/zooming while inspecting a building
+    // doesn't get yanked back). Keyed on building count + source, so a
+    // mock→live swap or a fresh reconcile run refits, but selecting a
+    // building or toggling a layer doesn't.
+    const fitKey = `${dataSource}:${buildings.length}`;
+    if (
+      mapInstanceRef.current &&
+      buildings.length > 0 &&
+      fitKey !== lastFitKeyRef.current
+    ) {
+      const allCoords = buildings.flatMap((b) => b.coordinates);
+      if (allCoords.length > 0) {
+        const bounds = L.latLngBounds(allCoords as L.LatLngExpression[]);
+        mapInstanceRef.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
+      }
+      lastFitKeyRef.current = fitKey;
     }
-
-    if (gnssLayerGroupRef.current) {
-      if (activeLayers.gnss) map.addLayer(gnssLayerGroupRef.current);
-      else map.removeLayer(gnssLayerGroupRef.current);
-    }
-  }, [activeLayers]);
+  }, [buildings, selectedBuilding, activeLayers, statusFilter, searchQuery, dataSource]);
 
   // Pan to selected building
   useEffect(() => {
@@ -295,8 +267,15 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
     setActiveLayers(prev => ({ ...prev, [layerKey]: !prev[layerKey] }));
   };
 
+  // Recenters on the real loaded dataset when there is one; only falls
+  // back to the fixed pilot-district point when nothing has loaded yet.
   const resetView = () => {
-    if (mapInstanceRef.current) {
+    if (!mapInstanceRef.current) return;
+    const allCoords = buildings.flatMap((b) => b.coordinates);
+    if (allCoords.length > 0) {
+      const bounds = L.latLngBounds(allCoords as L.LatLngExpression[]);
+      mapInstanceRef.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 18, animate: true });
+    } else {
       mapInstanceRef.current.setView([12.9784, 77.6408], 17, { animate: true });
     }
   };
@@ -391,7 +370,9 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
               <div className="absolute right-0 mt-2 w-64 bg-white rounded-2xl shadow-xl border border-[#E8E6E1] p-4 z-30 animate-in fade-in zoom-in-95 duration-150">
                 <div className="flex items-center justify-between pb-2 border-b border-[#F1F3F0] mb-3">
                   <span className="text-xs font-bold uppercase tracking-wider text-[#A3A9A5]">{t.dataLayers}</span>
-                  <span className="text-[10px] bg-[#F1F3F0] text-[#5E6660] font-bold px-2 py-0.5 rounded-full">Active</span>
+                  <span className="text-[10px] bg-[#F1F3F0] text-[#5E6660] font-bold px-2 py-0.5 rounded-full">
+                    {dataSource === 'live' ? 'Live' : 'Demo'}
+                  </span>
                 </div>
 
                 <div className="space-y-2.5 text-xs font-semibold text-[#2D312E]">
@@ -408,7 +389,17 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
                     />
                   </label>
 
-                  <label className="flex items-center justify-between cursor-pointer hover:bg-[#F8F9F8] p-1.5 rounded-lg transition">
+                  {/* Cadastral/Municipal overlays: the backend's canonical_entities
+                      table only records WHICH sources contributed, not each
+                      source's own polygon — so there's no distinct geometry to
+                      draw yet. Disabled rather than faking a second outline
+                      that would secretly trace the exact same shape. */}
+                  <label
+                    className={`flex items-center justify-between p-1.5 rounded-lg transition ${
+                      hasCadastralGeometry ? 'cursor-pointer hover:bg-[#F8F9F8]' : 'opacity-40 cursor-not-allowed'
+                    }`}
+                    title={hasCadastralGeometry ? undefined : 'Backend doesn\u2019t return separate cadastral geometry yet — only which entities include a cadastral source'}
+                  >
                     <span className="flex items-center gap-2">
                       <span className="text-base">🗺</span>
                       <span>{t.layerCadastral}</span>
@@ -416,12 +407,18 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
                     <input
                       type="checkbox"
                       checked={activeLayers.cadastral}
+                      disabled={!hasCadastralGeometry}
                       onChange={() => toggleLayer('cadastral')}
-                      className="accent-[#7D6D8A] w-4 h-4 cursor-pointer rounded"
+                      className="accent-[#7D6D8A] w-4 h-4 cursor-pointer rounded disabled:cursor-not-allowed"
                     />
                   </label>
 
-                  <label className="flex items-center justify-between cursor-pointer hover:bg-[#F8F9F8] p-1.5 rounded-lg transition">
+                  <label
+                    className={`flex items-center justify-between p-1.5 rounded-lg transition ${
+                      hasMunicipalGeometry ? 'cursor-pointer hover:bg-[#F8F9F8]' : 'opacity-40 cursor-not-allowed'
+                    }`}
+                    title={hasMunicipalGeometry ? undefined : 'Backend doesn\u2019t return separate municipal geometry yet — only which entities include a municipal source'}
+                  >
                     <span className="flex items-center gap-2">
                       <span className="text-base">🏛</span>
                       <span>{t.layerMunicipal}</span>
@@ -429,34 +426,9 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
                     <input
                       type="checkbox"
                       checked={activeLayers.municipal}
+                      disabled={!hasMunicipalGeometry}
                       onChange={() => toggleLayer('municipal')}
-                      className="accent-[#4A6D7C] w-4 h-4 cursor-pointer rounded"
-                    />
-                  </label>
-
-                  <label className="flex items-center justify-between cursor-pointer hover:bg-[#F8F9F8] p-1.5 rounded-lg transition">
-                    <span className="flex items-center gap-2">
-                      <span className="text-base">🛣</span>
-                      <span>{t.layerRoads}</span>
-                    </span>
-                    <input
-                      type="checkbox"
-                      checked={activeLayers.roads}
-                      onChange={() => toggleLayer('roads')}
-                      className="accent-[#5E6660] w-4 h-4 cursor-pointer rounded"
-                    />
-                  </label>
-
-                  <label className="flex items-center justify-between cursor-pointer hover:bg-[#F8F9F8] p-1.5 rounded-lg transition">
-                    <span className="flex items-center gap-2">
-                      <span className="text-base">📍</span>
-                      <span>{t.layerGnss} (CORS)</span>
-                    </span>
-                    <input
-                      type="checkbox"
-                      checked={activeLayers.gnss}
-                      onChange={() => toggleLayer('gnss')}
-                      className="accent-[#3A5A40] w-4 h-4 cursor-pointer rounded"
+                      className="accent-[#4A6D7C] w-4 h-4 cursor-pointer rounded disabled:cursor-not-allowed"
                     />
                   </label>
                 </div>
@@ -469,6 +441,34 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
 
       {/* Main Map Canvas Element */}
       <div ref={mapContainerRef} className="w-full flex-1 relative" />
+
+      {/* Empty-state overlay — only shown when there's genuinely nothing to
+          show (no buildings loaded at all), pointing at the two real actions
+          that would populate the map instead of leaving a blank canvas. */}
+      {buildings.length === 0 && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-[#FAF9F6]/90 backdrop-blur-xs pointer-events-none">
+          <div className="bg-white rounded-2xl shadow-md border border-[#E8E6E1] px-6 py-5 max-w-xs text-center pointer-events-auto">
+            <p className="text-sm font-bold text-[#1B2B1F] mb-1">No entities loaded yet</p>
+            <p className="text-xs text-[#5E6660] mb-4">
+              Upload source data and run reconciliation to see real buildings plotted here.
+            </p>
+            <div className="flex items-center justify-center gap-2">
+              <button
+                onClick={onOpenUploadModal}
+                className="px-3 py-1.5 rounded-lg border border-[#3A5A40] text-[#3A5A40] text-xs font-bold hover:bg-[#F8F9F8] transition"
+              >
+                Upload Data
+              </button>
+              <button
+                onClick={onOpenReconcileModal}
+                className="px-3 py-1.5 rounded-lg bg-[#3A5A40] hover:bg-[#2D4632] text-white text-xs font-bold transition"
+              >
+                Run Reconciliation
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Floating Map Navigation Controls */}
       <div className="absolute right-4 bottom-6 z-20 flex flex-col gap-2">

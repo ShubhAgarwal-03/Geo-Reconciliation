@@ -275,6 +275,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               language={language}
               onOpenReconcileModal={onOpenReconciliation}
               onOpenUploadModal={onOpenUpload}
+              dataSource={dataSource}
             />
           </div>
         </div>

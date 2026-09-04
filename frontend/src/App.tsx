@@ -242,6 +242,7 @@ const handleReject = async (id: string) => {
                     language={language}
                     onOpenReconcileModal={() => setShowReconcileModal(true)}
                     onOpenUploadModal={() => setActiveTab('data')}
+                    dataSource={dataSource}
                   />
                 </div>
 
