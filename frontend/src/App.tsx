@@ -27,6 +27,7 @@ import { DigitalLandEntityModal } from './components/DigitalLandEntityModal';
 import { TechnicalDetailsModal } from './components/TechnicalDetailsModal';
 import { HistoryModal } from './components/HistoryModal';
 import { DemoTourModal } from './components/DemoTourModal';
+import { resolveEntity } from './api/geoReconciliationClient';
 
 export default function App() {
   // Navigation & Localization
@@ -35,9 +36,17 @@ export default function App() {
 
   // Core Data State — pulls from the Geo-Reconciliation API when reachable,
   // silently falls back to mock data otherwise (see useLiveBuildings).
-  const { buildings, source: dataSource } = useLiveBuildings();
-  const [stats, setStats] = useState<ReconciliationStats>(initialStats);
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>(initialUploadedFiles);
+  const { buildings: liveBuildings, source: dataSource, refetch: refetchBuildings } = useLiveBuildings();
+  const [buildings, setBuildings] = useState<BuildingEntity[]>([]);
+  const [isResolving, setIsResolving] = useState(false);
+
+  // Mirror the hook's data into local state so approve/reject can optimistically
+  // update one entity without waiting for a full re-fetch.
+  React.useEffect(() => {
+    setBuildings(liveBuildings);
+  }, [liveBuildings]);
+    const [stats, setStats] = useState<ReconciliationStats>(initialStats);
+    const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>(initialUploadedFiles);
 
   // Selection & Modal States
   const [selectedBuilding, setSelectedBuilding] = useState<BuildingEntity | null>(() => {
@@ -75,27 +84,51 @@ export default function App() {
     setActiveTab('map');
   };
 
-  const handleReconciliationComplete = () => {
-    // Update stats to reflect the completed reconciliation
+  const updateBuildingStatus = (id: string, status: BuildingEntity['status']) => {
+  setBuildings(prev => prev.map(b => (b.id === id ? { ...b, status } : b)));
+  setSelectedBuilding(prev => (prev && prev.id === id ? { ...prev, status } : prev));
+};
+
+const handleApprove = async (id: string) => {
+  setIsResolving(true);
+  try {
+    await resolveEntity(id, { status: 'approved' });
+    updateBuildingStatus(id, 'reconciled');
+  } catch (e) {
+    console.error('Failed to approve entity', id, e);
+    // Optionally surface a toast/error here — no error UI exists yet in this component.
+  } finally {
+    setIsResolving(false);
+  }
+};
+
+const handleReject = async (id: string) => {
+  setIsResolving(true);
+  try {
+    await resolveEntity(id, { status: 'rejected' });
+    updateBuildingStatus(id, 'conflict');
+  } catch (e) {
+    console.error('Failed to reject entity', id, e);
+  } finally {
+    setIsResolving(false);
+  }
+};
+
+  const handleReconciliationComplete = (result?: {
+  raw_feature_count?: number | null;
+  canonical_entity_count?: number | null;
+  review_queue_count?: number | null;
+}) => {
+  if (result) {
     setStats(prev => ({
       ...prev,
-      matched: 1103,
-      requiresReview: 11,
-      averageConfidence: 94,
-      conflictsDetected: 11,
-      autoResolved: 31,
+      totalBuildings: result.canonical_entity_count ?? prev.totalBuildings,
+      requiresReview: result.review_queue_count ?? prev.requiresReview,
     }));
-
-    // If current selected building was in conflict or review, verify it
-    if (selectedBuilding) {
-      setSelectedBuilding(prev => prev ? {
-        ...prev,
-        status: 'reconciled',
-        confidence: Math.max(prev.confidence, 94),
-        agreementScore: 96,
-      } : null);
-    }
-  };
+  }
+  // Pull the freshly reconciled entities into the map/dashboard.
+  refetchBuildings();
+};
 
   const handleAddFile = (newFile: UploadedFile) => {
     setUploadedFiles(prev => [newFile, ...prev]);
@@ -175,15 +208,18 @@ export default function App() {
                 {/* Right: Building Detail & Source Agreement Panel */}
                 <div className="w-full lg:w-96 border-t lg:border-t-0 lg:border-l border-[#E8E6E1] bg-white h-auto lg:h-full overflow-hidden shrink-0 shadow-sm z-20">
                   <BuildingDetailPanel
-                    building={selectedBuilding}
-                    onClose={() => setSelectedBuilding(null)}
-                    language={language}
-                    onViewSources={() => setShowSourcesModal(true)}
-                    onOpenReconcile={() => setShowReconcileModal(true)}
-                    onOpenDigitalCard={() => setShowDigitalCardModal(true)}
-                    onOpenTechnicalDetails={() => setShowTechDetailsModal(true)}
-                    onOpenHistory={() => setShowHistoryModal(true)}
-                  />
+  building={selectedBuilding}
+  onClose={() => setSelectedBuilding(null)}
+  language={language}
+  onViewSources={() => setShowSourcesModal(true)}
+  onOpenReconcile={() => setShowReconcileModal(true)}
+  onOpenDigitalCard={() => setShowDigitalCardModal(true)}
+  onOpenTechnicalDetails={() => setShowTechDetailsModal(true)}
+  onOpenHistory={() => setShowHistoryModal(true)}
+  onApprove={handleApprove}
+  onReject={handleReject}
+  isResolving={isResolving}
+/>
                 </div>
               </div>
             )}
@@ -233,12 +269,12 @@ export default function App() {
 
       {/* Modal 2: 7-Stage Reconciliation Pipeline Visualizer Modal */}
       {showReconcileModal && (
-        <ReconciliationModal
-          onClose={() => setShowReconcileModal(false)}
-          language={language}
-          onComplete={handleReconciliationComplete}
-        />
-      )}
+  <ReconciliationModal
+    onClose={() => setShowReconcileModal(false)}
+    language={language}
+    onComplete={handleReconciliationComplete}
+  />
+)}
 
       {/* Modal 3: Official Digital Land Entity Certificate Card Modal */}
       {showDigitalCardModal && selectedBuilding && (

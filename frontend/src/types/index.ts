@@ -47,9 +47,9 @@ export interface BuildingEntity {
   status: BuildingStatus;
   confidence: number;
   area: number;
-  landUse: 'Residential' | 'Commercial' | 'Institutional' | 'Mixed Use' | 'Industrial';
-  height: number;
-  floors: number;
+  landUse: 'Residential' | 'Commercial' | 'Institutional' | 'Mixed Use' | 'Industrial' | 'Not classified';
+  height: number | null;
+  floors: number | null;
   sourcesCount: number;
   agreementScore: number;
   lastUpdated: string;

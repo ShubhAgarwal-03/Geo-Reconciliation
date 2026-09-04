@@ -82,3 +82,8 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     canonical_entity_count  INTEGER,
     review_queue_count      INTEGER
 );
+
+ALTER TABLE canonical_entities
+  ADD COLUMN IF NOT EXISTS resolved_status TEXT,   -- 'approved' | 'rejected' | 'edited'
+  ADD COLUMN IF NOT EXISTS reviewer_note   TEXT,
+  ADD COLUMN IF NOT EXISTS reviewed_at     TIMESTAMPTZ;

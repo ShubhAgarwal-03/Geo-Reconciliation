@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.db import get_connection
-from backend.routers import entities, review_queue
+from backend.routers import entities, review_queue, upload, reconcile
 
 app = FastAPI(title="Geospatial Reconciliation Engine API")
 
@@ -30,6 +30,8 @@ app.add_middleware(
 
 app.include_router(entities.router)
 app.include_router(review_queue.router)
+app.include_router(upload.router)
+app.include_router(reconcile.router)
 
 
 @app.get("/health")

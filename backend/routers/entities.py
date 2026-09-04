@@ -17,6 +17,9 @@ import json
 import sys
 from pathlib import Path
 
+from datetime import datetime, timezone
+from backend.schema import ResolveRequest, ResolveResponse  # add to your existing schema import line
+
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 from fastapi import APIRouter, HTTPException, Query
@@ -161,3 +164,35 @@ def get_entity_detail(canonical_uid: str):
         avg_iou_agreement=row["avg_iou_agreement"],
         tile_id=row["tile_id"],
     )
+    
+@router.patch("/{canonical_uid}/resolve", response_model=ResolveResponse)
+def resolve_entity(canonical_uid: str, body: ResolveRequest):
+    """Marks an entity as reviewed — clears needs_review and records the
+    human decision. This is what the review-queue UI should call when
+    someone clicks Approve/Reject/Edit on a flagged entity."""
+    if body.status not in ("approved", "rejected", "edited"):
+        raise HTTPException(status_code=400, detail="status must be approved, rejected, or edited")
+
+    query = """
+        UPDATE canonical_entities
+        SET needs_review = FALSE,
+            resolved_status = %(status)s,
+            reviewer_note = %(note)s,
+            reviewed_at = %(ts)s
+        WHERE canonical_uid = %(canonical_uid)s
+        RETURNING canonical_uid
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, {
+                "status": body.status,
+                "note": body.note,
+                "ts": datetime.now(timezone.utc),
+                "canonical_uid": canonical_uid,
+            })
+            row = cur.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No entity with canonical_uid={canonical_uid}")
+
+    return ResolveResponse(canonical_uid=row["canonical_uid"], resolved_status=body.status)

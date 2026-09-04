@@ -36,3 +36,27 @@ class ClusteredCell(BaseModel):
     lat: float
     count: int
     avg_confidence: float
+    
+class ResolveRequest(BaseModel):
+    status: str  # "approved" | "rejected" | "edited"
+    note: str | None = None
+
+class ResolveResponse(BaseModel):
+    canonical_uid: str
+    resolved_status: str
+
+class UploadResponse(BaseModel):
+    filename: str
+    stored_path: str
+    status: str
+    
+class ReconcileRequest(BaseModel):
+    bbox: list[float] | None = None          # NOTE: currently cosmetic — see caveat below          # [min_lon, min_lat, max_lon, max_lat]
+    uploaded_file_path: str | None = None
+
+class ReconcileResponse(BaseModel):
+    run_id: int
+    status: str
+    raw_feature_count: Optional[int] = None
+    canonical_entity_count: Optional[int] = None
+    review_queue_count: Optional[int] = None

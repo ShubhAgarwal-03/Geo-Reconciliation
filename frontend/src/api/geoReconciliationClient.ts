@@ -103,3 +103,73 @@ export async function fetchReviewQueue(bbox?: BBox, limit?: number): Promise<Api
     limit,
   });
 }
+
+export interface ResolveRequestBody {
+  status: 'approved' | 'rejected' | 'edited';
+  note?: string;
+}
+
+export interface ResolveResponse {
+  canonical_uid: string;
+  resolved_status: string;
+}
+
+export async function resolveEntity(
+  canonicalUid: string,
+  body: ResolveRequestBody
+): Promise<ResolveResponse> {
+  const url = new URL(`/entities/${encodeURIComponent(canonicalUid)}/resolve`, API_BASE_URL);
+  const res = await fetch(url.toString(), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Geo-Reconciliation API ${res.status} on resolve: ${await res.text().catch(() => '')}`);
+  return res.json();
+}
+
+export interface UploadResponse {
+  filename: string;
+  stored_path: string;
+  status: string;
+}
+
+export async function uploadFile(file: File): Promise<UploadResponse> {
+  const form = new FormData();
+  form.append('file', file);
+  const url = new URL('/upload', API_BASE_URL);
+  const res = await fetch(url.toString(), { method: 'POST', body: form });
+  if (!res.ok) throw new Error(`Geo-Reconciliation API ${res.status} on upload: ${await res.text().catch(() => '')}`);
+  return res.json();
+}
+
+export interface ReconcileResponse {
+  run_id: number;
+  status: 'started' | 'running' | 'complete';
+  raw_feature_count?: number | null;
+  canonical_entity_count?: number | null;
+  review_queue_count?: number | null;
+}
+
+
+
+export async function triggerReconcile(
+  uploadedFilePath?: string,
+  bbox?: number[]
+): Promise<ReconcileResponse> {
+  const url = new URL('/reconcile', API_BASE_URL);
+  const res = await fetch(url.toString(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      bbox: bbox ?? null,
+      uploaded_file_path: uploadedFilePath ?? null,
+    }),
+  });
+  if (!res.ok) throw new Error(`Geo-Reconciliation API ${res.status} on reconcile: ${await res.text().catch(() => '')}`);
+  return res.json();
+}
+
+export async function getReconcileStatus(runId: number): Promise<ReconcileResponse> {
+  return apiGet<ReconcileResponse>(`/reconcile/${runId}`);
+}

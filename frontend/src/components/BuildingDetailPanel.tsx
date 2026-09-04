@@ -34,6 +34,9 @@ interface BuildingDetailPanelProps {
   onViewDigitalCard?: () => void;
   onOpenDigitalCard?: () => void;
   onOpenReconcile?: () => void;
+  onApprove?: (buildingId: string) => void;
+  onReject?: (buildingId: string) => void;
+  isResolving?: boolean;
 }
 
 export const BuildingDetailPanel: React.FC<BuildingDetailPanelProps> = ({
@@ -48,6 +51,9 @@ export const BuildingDetailPanel: React.FC<BuildingDetailPanelProps> = ({
   onViewDigitalCard,
   onOpenDigitalCard,
   onOpenReconcile,
+  onApprove,
+  onReject,
+  isResolving,
 }) => {
   const t = translations[language];
 
@@ -157,7 +163,9 @@ export const BuildingDetailPanel: React.FC<BuildingDetailPanelProps> = ({
           <div className="bg-[#F8F9F8] p-3 rounded-xl border border-[#E8E6E1]/80">
             <p className="text-[10px] text-[#5E6660] font-semibold uppercase">{t.confidence}</p>
             <p className="text-lg font-bold text-[#4A7C44] mt-0.5">{building.confidence}%</p>
-            <span className="text-[10px] text-[#A3A9A5] block">{building.floors} Floors • {building.height}m</span>
+            <span className="text-[10px] text-[#A3A9A5] block">
+              {building.floors != null ? `${building.floors} Floors` : 'Floors: N/A'} • {building.height != null ? `${building.height}m` : 'Height: N/A'}
+            </span>
           </div>
         </div>
 
@@ -166,7 +174,7 @@ export const BuildingDetailPanel: React.FC<BuildingDetailPanelProps> = ({
           <div className="flex items-center justify-between pb-1 border-b border-[#F1F3F0]">
             <p className="text-[10px] font-bold text-[#A3A9A5] uppercase tracking-wider">Source Divergence</p>
             <span className="text-[10px] font-bold text-[#3A5A40] bg-[#EAF2EA] px-2 py-0.5 rounded-full">
-              4 Sources
+              {building.sourcesCount} {building.sourcesCount === 1 ? 'Source' : 'Sources'}
             </span>
           </div>
 
@@ -216,7 +224,7 @@ export const BuildingDetailPanel: React.FC<BuildingDetailPanelProps> = ({
           </div>
           <p className="text-[10px] text-[#4A7C44] font-semibold mt-2 flex items-center gap-1">
             <CheckCircle2 className="w-3 h-3 text-[#4A7C44]" />
-            <span>Geometry aligned across 4 datasets</span>
+            <span>Geometry aligned across {building.sourcesCount} {building.sourcesCount === 1 ? 'dataset' : 'datasets'}</span>
           </p>
         </div>
 
@@ -263,6 +271,27 @@ export const BuildingDetailPanel: React.FC<BuildingDetailPanelProps> = ({
           </div>
         </div>
 
+        {building.status === 'review' && (onApprove || onReject) && (
+  <div className="flex gap-2.5 pt-1">
+    <button
+      onClick={() => onApprove && onApprove(building.id)}
+      disabled={isResolving}
+      className="flex-1 py-2.5 bg-[#4A7C44] hover:bg-[#3A5A40] disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-xs transition flex items-center justify-center gap-2"
+    >
+      <CheckCircle2 className="w-4 h-4" />
+      <span>{isResolving ? 'Saving…' : 'Approve'}</span>
+    </button>
+    <button
+      onClick={() => onReject && onReject(building.id)}
+      disabled={isResolving}
+      className="flex-1 py-2.5 bg-white hover:bg-[#FDF2F0] border border-[#F8D7DA] disabled:opacity-50 text-[#D66D54] text-xs font-bold rounded-xl transition flex items-center justify-center gap-2"
+    >
+      <AlertOctagon className="w-4 h-4" />
+      <span>Reject</span>
+    </button>
+  </div>
+)}
+
         {/* Action Buttons */}
         <div className="flex flex-col gap-2.5 pt-2 mt-auto">
           <button
@@ -291,6 +320,8 @@ export const BuildingDetailPanel: React.FC<BuildingDetailPanelProps> = ({
             </button>
           </div>
         </div>
+
+        
 
       </div>
 
