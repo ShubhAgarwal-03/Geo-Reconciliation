@@ -1,21 +1,16 @@
 import React, { useState } from 'react';
-import { 
-  UploadCloud, 
-  FileText, 
-  CheckCircle2, 
-  AlertCircle, 
-  Clock, 
-  HardDrive, 
-  FileSpreadsheet, 
-  FileBox, 
-  Sparkles, 
-  Plus, 
-  Check, 
+import {
+  UploadCloud,
+  CheckCircle2,
+  FileBox,
+  Sparkles,
+  Check,
   FileUp,
   RefreshCw,
   FolderOpen
 } from 'lucide-react';
 import { UploadedFile, Language } from '../types';
+import { uploadFile } from '../api/geoReconciliationClient';
 import { translations } from '../data/i18n';
 
 interface DataUploadViewProps {
@@ -48,31 +43,42 @@ export const DataUploadView: React.FC<DataUploadViewProps> = ({
     { id: "Other", label: "Other", icon: "📦", desc: "DSM/DTM LiDAR surface elevations (.las, .tif)" },
   ];
 
-  const handleSimulatedUpload = (customName?: string) => {
+  // Real upload — hits POST /upload on the FastAPI backend
+  // (backend/routers/upload.py). That endpoint currently only accepts
+  // .geojson/.json/.zip and only stores the file; it does not parse it,
+  // so featuresCount/crsDetected below stay honestly "not yet known"
+  // rather than fabricated. If you extend the backend to parse on
+  // upload, update this function to use the real returned values.
+  const handleUpload = async (file: File) => {
     setIsUploading(true);
-    setTimeout(() => {
+    try {
+      const res = await uploadFile(file); // real POST /upload
       const newFile: UploadedFile = {
         id: `UPL-${Date.now().toString().slice(-4)}`,
-        name: customName || `Survey_Dataset_${selectedDataType.replace(/[^a-zA-Z]/g, '')}_${new Date().toISOString().slice(0, 10)}.geojson`,
+        name: res.filename,
         dataType: selectedDataType,
-        size: "34.2 MB",
-        uploadDate: "Just now",
-        status: "processed",
-        crsDetected: "CRS Auto-Detected (EPSG:4326 normalized)",
-        featuresCount: 124,
+        size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`, // real, from the File object
+        uploadDate: 'Just now',
+        status: 'processing', // honest: backend stores the file but doesn't parse it yet
+        crsDetected: 'Pending — analyzed when reconciliation runs',
+        featuresCount: 0, // backend doesn't return this; no source to pull a real number from
         errorCount: 0,
       };
-
       onAddFile(newFile);
-      setIsUploading(false);
-      setSuccessMessage(`Successfully ingested ${newFile.name}!`);
+      setSuccessMessage(`Uploaded ${res.filename} — ${res.status}`);
       setTimeout(() => setSuccessMessage(null), 4000);
-    }, 1000);
+    } catch (e) {
+      setSuccessMessage(null);
+      console.error('Upload failed', e);
+      alert(e instanceof Error ? e.message : 'Upload failed');
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   return (
     <div className="max-w-6xl mx-auto space-y-8 py-6 px-4 sm:px-6">
-      
+
       {/* Title & Introduction */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -107,7 +113,7 @@ export const DataUploadView: React.FC<DataUploadViewProps> = ({
 
       {/* Main Upload Area */}
       <div className="bg-white rounded-3xl p-6 sm:p-8 border border-[#E8E6E1] shadow-sm space-y-6">
-        
+
         {/* Step 1: Category Selector */}
         <div>
           <label className="text-xs font-bold uppercase tracking-wider text-[#5E6660] block mb-3">
@@ -150,7 +156,7 @@ export const DataUploadView: React.FC<DataUploadViewProps> = ({
             onDrop={(e) => {
               e.preventDefault();
               setIsDragging(false);
-              handleSimulatedUpload(e.dataTransfer.files[0]?.name);
+              if (e.dataTransfer.files[0]) handleUpload(e.dataTransfer.files[0]);
             }}
             className={`border-2 border-dashed rounded-3xl p-8 sm:p-12 text-center transition-all ${
               isDragging
@@ -159,14 +165,18 @@ export const DataUploadView: React.FC<DataUploadViewProps> = ({
             }`}
           >
             <div className="w-16 h-16 rounded-2xl bg-[#EAF2EA] text-[#3A5A40] flex items-center justify-center mx-auto mb-4">
-              <UploadCloud className="w-8 h-8 stroke-[2.2]" />
+              {isUploading ? (
+                <RefreshCw className="w-8 h-8 stroke-[2.2] animate-spin" />
+              ) : (
+                <UploadCloud className="w-8 h-8 stroke-[2.2]" />
+              )}
             </div>
 
             <h3 className="text-base sm:text-lg font-serif font-bold text-[#1B2B1F]">
-              Drop files here
+              {isUploading ? 'Uploading…' : 'Drop files here'}
             </h3>
             <p className="text-xs text-[#5E6660] mt-1">
-              Supports GeoTIFF, Shapefile (.zip), GeoJSON, KML, CSV, GeoPackage, LAS/LAZ
+              Currently accepted by the backend: GeoJSON (.geojson, .json) and zipped Shapefiles (.zip)
             </p>
 
             <div className="my-4 flex items-center justify-center gap-3">
@@ -176,37 +186,20 @@ export const DataUploadView: React.FC<DataUploadViewProps> = ({
             </div>
 
             <div className="flex flex-wrap items-center justify-center gap-3">
-              <label className="cursor-pointer inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#1B2B1F] hover:bg-[#2D312E] text-white text-xs font-bold shadow-sm transition active:scale-95">
+              <label className={`cursor-pointer inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#1B2B1F] hover:bg-[#2D312E] text-white text-xs font-bold shadow-sm transition active:scale-95 ${isUploading ? 'opacity-50 pointer-events-none' : ''}`}>
                 <FolderOpen className="w-4 h-4" />
                 <span>Choose Files</span>
                 <input
                   type="file"
+                  accept=".geojson,.json,.zip"
                   className="hidden"
+                  disabled={isUploading}
                   onChange={(e) => {
-                    if (e.target.files && e.target.files[0]) {
-                      handleSimulatedUpload(e.target.files[0].name);
-                    }
+                    if (e.target.files?.[0]) handleUpload(e.target.files[0]);
+                    e.target.value = ''; // allow re-selecting the same file next time
                   }}
                 />
               </label>
-
-              <button
-                onClick={() => handleSimulatedUpload()}
-                disabled={isUploading}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#F1F3F0] hover:bg-[#E8E6E1] text-[#2D312E] text-xs font-bold transition disabled:opacity-50"
-              >
-                {isUploading ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#3A5A40]" />
-                    <span>Processing CRS & Geometry...</span>
-                  </>
-                ) : (
-                  <>
-                    <FileUp className="w-3.5 h-3.5 text-[#5E6660]" />
-                    <span>Load Demo {selectedDataType} Sample</span>
-                  </>
-                )}
-              </button>
             </div>
 
             {/* Smart Backend Promise Callout */}
@@ -271,7 +264,9 @@ export const DataUploadView: React.FC<DataUploadViewProps> = ({
                       <span>{file.status}</span>
                     </span>
                   </td>
-                  <td className="py-3.5 font-mono font-bold text-[#1B2B1F]">{file.featuresCount}</td>
+                  <td className="py-3.5 font-mono font-bold text-[#1B2B1F]">
+                    {file.featuresCount > 0 ? file.featuresCount : '—'}
+                  </td>
                   <td className="py-3.5 text-right pr-2">
                     <span className="text-[11px] text-[#5E6660] font-mono">
                       {file.crsDetected}
