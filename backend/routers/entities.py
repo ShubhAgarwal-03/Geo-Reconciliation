@@ -49,7 +49,8 @@ def get_entities(
     query = f"""
         SELECT canonical_uid, bhu_aadhar,
                ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geojson,
-               area_m2, source_count, sources, confidence_score, needs_review
+               area_m2, source_count, sources, confidence_score, needs_review,
+               height_m, estimated_floors, elevation_roof_m, elevation_ground_m
         FROM canonical_entities
         WHERE ST_Intersects(
             geom,
@@ -76,6 +77,10 @@ def get_entities(
             sources=r["sources"],
             confidence_score=r["confidence_score"],
             needs_review=r["needs_review"],
+            height_m=float(r["height_m"]) if r.get("height_m") is not None else None,
+            estimated_floors=r.get("estimated_floors"),
+            elevation_roof_m=float(r["elevation_roof_m"]) if r.get("elevation_roof_m") is not None else None,
+            elevation_ground_m=float(r["elevation_ground_m"]) if r.get("elevation_ground_m") is not None else None,
         )
         for r in rows
     ]
@@ -162,7 +167,8 @@ def search_entities(
     query = f"""
         SELECT canonical_uid, bhu_aadhar,
                ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geojson,
-               area_m2, source_count, sources, confidence_score, needs_review
+               area_m2, source_count, sources, confidence_score, needs_review,
+               height_m, estimated_floors, elevation_roof_m, elevation_ground_m
         FROM canonical_entities
         WHERE bhu_aadhar ILIKE %(pattern)s
            OR canonical_uid ILIKE %(pattern)s
@@ -196,6 +202,10 @@ def search_entities(
             sources=r["sources"],
             confidence_score=r["confidence_score"],
             needs_review=r["needs_review"],
+            height_m=float(r["height_m"]) if r.get("height_m") is not None else None,
+            estimated_floors=r.get("estimated_floors"),
+            elevation_roof_m=float(r["elevation_roof_m"]) if r.get("elevation_roof_m") is not None else None,
+            elevation_ground_m=float(r["elevation_ground_m"]) if r.get("elevation_ground_m") is not None else None,
         )
         for r in rows
     ]
@@ -213,7 +223,8 @@ def get_entity_detail(canonical_uid: str):
                ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geojson,
                area_m2, source_count, sources, member_feature_ids,
                avg_match_score, avg_iou_agreement, confidence_score,
-               needs_review, tile_id
+               needs_review, tile_id,
+               height_m, estimated_floors, elevation_roof_m, elevation_ground_m
         FROM canonical_entities
         WHERE canonical_uid ILIKE %(identifier)s
            OR bhu_aadhar ILIKE %(identifier)s
@@ -250,6 +261,10 @@ def get_entity_detail(canonical_uid: str):
         avg_match_score=row["avg_match_score"],
         avg_iou_agreement=row["avg_iou_agreement"],
         tile_id=row["tile_id"],
+        height_m=float(row["height_m"]) if row.get("height_m") is not None else None,
+        estimated_floors=row.get("estimated_floors"),
+        elevation_roof_m=float(row["elevation_roof_m"]) if row.get("elevation_roof_m") is not None else None,
+        elevation_ground_m=float(row["elevation_ground_m"]) if row.get("elevation_ground_m") is not None else None,
     )
     
 @router.patch("/{canonical_uid}/resolve", response_model=ResolveResponse)

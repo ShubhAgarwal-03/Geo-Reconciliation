@@ -21,6 +21,10 @@ class EntitySummary(BaseModel):
     sources: list[str]
     confidence_score: float
     needs_review: bool
+    height_m: Optional[float] = None
+    estimated_floors: Optional[int] = None
+    elevation_roof_m: Optional[float] = None
+    elevation_ground_m: Optional[float] = None
 
 
 class EntityDetail(EntitySummary):
