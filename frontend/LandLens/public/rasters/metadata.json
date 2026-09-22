@@ -1,0 +1,37 @@
+{
+  "bounds": {
+    "southWest": [
+      12.900138899999991,
+      77.57986109999999
+    ],
+    "northEast": [
+      12.990138899999991,
+      77.65986109999999
+    ],
+    "center": [
+      12.945138899999991,
+      77.61986109999998
+    ]
+  },
+  "dsm": {
+    "name": "Copernicus GLO-30 DSM",
+    "file": "/rasters/dsm_copernicus.png",
+    "minElev": 865.0,
+    "maxElev": 955.0,
+    "unit": "m (MSL)"
+  },
+  "dtm": {
+    "name": "FABDEM v1.2 DTM",
+    "file": "/rasters/dtm_fabdem.png",
+    "minElev": 865.0,
+    "maxElev": 955.0,
+    "unit": "m (MSL)"
+  },
+  "ndsm": {
+    "name": "nDSM Structure Heights",
+    "file": "/rasters/ndsm_heights.png",
+    "minHeight": 0,
+    "maxHeight": 22.0,
+    "unit": "m (Height)"
+  }
+}
