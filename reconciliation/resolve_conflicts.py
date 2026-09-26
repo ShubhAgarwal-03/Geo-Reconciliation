@@ -122,7 +122,8 @@ def reconcile_clusters(
     features_by_id: dict[int, dict],
     geometry_strategy: GeometryStrategy = "union",
 ) -> list[ReconciledEntity]:
-    reconciled = [reconcile_cluster(c, features_by_id, geometry_strategy) for c in clusters]
+    from tqdm import tqdm
+    reconciled = [reconcile_cluster(c, features_by_id, geometry_strategy) for c in tqdm(clusters, desc="[reconcile] Resolving cluster conflicts", unit="cluster")]
     matched = sum(1 for r in reconciled if r.source_count > 1)
     logger.info("reconciled %d clusters (%d multi-source, %d single-source)",
                 len(reconciled), matched, len(reconciled) - matched)

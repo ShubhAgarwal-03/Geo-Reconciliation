@@ -124,10 +124,12 @@ def find_match_edges(
     geoms = [f["geometry"] for f in features]
     tree = STRtree(geoms)
 
+    from tqdm import tqdm
+
     edges: list[MatchEdge] = []
     seen_pairs: set[tuple[int, int]] = set()
 
-    for i, fa in enumerate(features):
+    for i, fa in enumerate(tqdm(features, desc="[matching] STRtree candidate scoring", unit="feat")):
         if fa["geometry"] is None or fa["geometry"].is_empty:
             continue
         query_geom = fa["geometry"].buffer(search_radius_m)
@@ -283,24 +285,25 @@ def cluster_features(features: list[dict], edges: list[MatchEdge]) -> list[Clust
 def write_match_edges(edges: list[MatchEdge], tile_id: str | None = None) -> None:
     if not edges:
         return
+    from tqdm import tqdm
     rows = [
         (e.feature_id_a, e.feature_id_b, e.score.total, e.score.iou,
          e.score.centroid_component, e.score.attribute, tile_id)
         for e in edges
     ]
+    CHUNK_SIZE = 5000
+    insert_sql = """
+        INSERT INTO match_edges
+            (feature_id_a, feature_id_b, score_total, score_iou,
+             score_centroid, score_attribute, tile_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (feature_id_a, feature_id_b) DO NOTHING
+    """
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.executemany(
-                """
-                INSERT INTO match_edges
-                    (feature_id_a, feature_id_b, score_total, score_iou,
-                     score_centroid, score_attribute, tile_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (feature_id_a, feature_id_b) DO NOTHING
-                """,
-                rows,
-            )
-        conn.commit()
+            for i in tqdm(range(0, len(rows), CHUNK_SIZE), desc="[matching] Writing match edges", unit="chunk"):
+                cur.executemany(insert_sql, rows[i:i + CHUNK_SIZE])
+                conn.commit()
     logger.info("wrote %d match edges", len(rows))
 
 

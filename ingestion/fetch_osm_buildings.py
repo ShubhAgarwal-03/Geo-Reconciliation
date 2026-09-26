@@ -45,7 +45,7 @@ ox.settings.requests_timeout = 20  # fail fast on a bad IP instead of waiting 18
 # ox.settings.overpass_url = "https://overpass.openstreetmap.ru/api"
 # ox.settings.overpass_url = "https://overpass.kumi.systems/api"
 
-from config import DISTRICT_BBOX, CRS_LATLON, CRS_PROJECTED
+from config import DISTRICT_BBOX, CRS_LATLON, CRS_PROJECTED, SCRATCH_DIR
 
 
 def fetch_osm_buildings(bbox: tuple[float, float, float, float] = DISTRICT_BBOX) -> gpd.GeoDataFrame:
@@ -54,6 +54,14 @@ def fetch_osm_buildings(bbox: tuple[float, float, float, float] = DISTRICT_BBOX)
     building_type, area_m2, extraction_confidence, geometry) in EPSG:4326 —
     matching/normalize.py handles the reprojection into the matching SRID."""
     min_lon, min_lat, max_lon, max_lat = bbox
+
+    cache_path = SCRATCH_DIR / f"osm_buildings_{min_lon:.4f}_{min_lat:.4f}_{max_lon:.4f}_{max_lat:.4f}.geojson"
+    if cache_path.exists() and cache_path.stat().st_size > 100:
+        print(f"[OSM] Loading cached OSM buildings from {cache_path.name}...")
+        cached_gdf = gpd.read_file(str(cache_path))
+        print(f"[OSM] Loaded {len(cached_gdf)} cached buildings")
+        return cached_gdf
+
     print(f"[OSM] Querying buildings for district bbox: {bbox}")
 
     # Retry loop: one of Overpass's server IPs is unreachable from this
@@ -88,6 +96,11 @@ def fetch_osm_buildings(bbox: tuple[float, float, float, float] = DISTRICT_BBOX)
     keep = ["entity_uid", "source", "feature_type", "building_type",
             "area_m2", "extraction_confidence", "geometry"]
     gdf = gdf[[c for c in keep if c in gdf.columns]]
+
+    try:
+        gdf.to_file(str(cache_path), driver="GeoJSON")
+    except Exception as e:
+        print(f"[OSM] Warning: Could not cache to disk: {e}")
 
     print(f"[OSM] Fetched {len(gdf)} buildings")
     return gdf

@@ -14,12 +14,17 @@ from pydantic import BaseModel
 class EntitySummary(BaseModel):
     """Full-detail entity — used by GET /entities (zoomed-in view)."""
     canonical_uid: str
+    bhu_aadhar: Optional[str] = None
     geometry: dict[str, Any]  # GeoJSON geometry, already reprojected to EPSG:4326
     area_m2: Optional[float]
     source_count: int
     sources: list[str]
     confidence_score: float
     needs_review: bool
+    height_m: Optional[float] = None
+    estimated_floors: Optional[int] = None
+    elevation_roof_m: Optional[float] = None
+    elevation_ground_m: Optional[float] = None
 
 
 class EntityDetail(EntitySummary):

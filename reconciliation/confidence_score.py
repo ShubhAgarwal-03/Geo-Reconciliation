@@ -85,8 +85,9 @@ def score_entities(
     review_threshold: float = CONFIDENCE_REVIEW_THRESHOLD,
     weights: ConfidenceWeights = DEFAULT_WEIGHTS,
 ) -> list[ScoredEntity]:
+    from tqdm import tqdm
     scored = []
-    for entity in entities:
+    for entity in tqdm(entities, desc="[reconcile] Computing confidence scores", unit="entity"):
         confidence = compute_confidence(entity, weights=weights)
         scored.append(ScoredEntity(entity=entity, confidence=confidence, needs_review=confidence < review_threshold))
     n_review = sum(1 for s in scored if s.needs_review)
@@ -103,10 +104,13 @@ def write_scored_entities(scored: list[ScoredEntity], tile_id: str | None = None
     if not scored:
         logger.info("no scored entities to write")
         return
+    from tqdm import tqdm
+    from reconciliation.bhu_aadhar import generate_bhu_aadhar
 
     rows = [
         (
             s.entity.entity_id,
+            generate_bhu_aadhar(s.entity.geom),
             s.entity.geom.wkt,
             s.entity.geom.area,
             s.entity.source_count,
@@ -121,20 +125,22 @@ def write_scored_entities(scored: list[ScoredEntity], tile_id: str | None = None
         for s in scored
     ]
 
+    CHUNK_SIZE = 5000
+    insert_sql = f"""
+        INSERT INTO canonical_entities
+            (canonical_uid, bhu_aadhar, geom, area_m2, source_count, sources,
+             member_feature_ids, avg_match_score, avg_iou_agreement,
+             confidence_score, needs_review, tile_id)
+        VALUES (%s, %s, ST_GeomFromText(%s, {MATCH_SRID}), %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (canonical_uid) DO UPDATE SET
+            bhu_aadhar = EXCLUDED.bhu_aadhar,
+            confidence_score = EXCLUDED.confidence_score,
+            needs_review = EXCLUDED.needs_review
+    """
+
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.executemany(
-                f"""
-                INSERT INTO canonical_entities
-                    (canonical_uid, geom, area_m2, source_count, sources,
-                     member_feature_ids, avg_match_score, avg_iou_agreement,
-                     confidence_score, needs_review, tile_id)
-                VALUES (%s, ST_GeomFromText(%s, {MATCH_SRID}), %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (canonical_uid) DO UPDATE SET
-                    confidence_score = EXCLUDED.confidence_score,
-                    needs_review = EXCLUDED.needs_review
-                """,
-                rows,
-            )
-        conn.commit()
+            for i in tqdm(range(0, len(rows), CHUNK_SIZE), desc="[reconcile] Writing canonical entities", unit="chunk"):
+                cur.executemany(insert_sql, rows[i:i + CHUNK_SIZE])
+                conn.commit()
     logger.info("wrote %d canonical entities", len(rows))

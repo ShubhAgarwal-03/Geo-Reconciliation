@@ -15,6 +15,7 @@ about the projected CRS at all.
 
 import json
 import sys
+import unicodedata
 from pathlib import Path
 
 from datetime import datetime, timezone
@@ -46,9 +47,10 @@ def get_entities(
     the zoomed-in map view — the frontend switches to /entities/clustered
     below whatever zoom threshold the team settles on."""
     query = f"""
-        SELECT canonical_uid,
+        SELECT canonical_uid, bhu_aadhar,
                ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geojson,
-               area_m2, source_count, sources, confidence_score, needs_review
+               area_m2, source_count, sources, confidence_score, needs_review,
+               height_m, estimated_floors, elevation_roof_m, elevation_ground_m
         FROM canonical_entities
         WHERE ST_Intersects(
             geom,
@@ -68,12 +70,17 @@ def get_entities(
     return [
         EntitySummary(
             canonical_uid=r["canonical_uid"],
+            bhu_aadhar=r.get("bhu_aadhar"),
             geometry=json.loads(r["geojson"]),
             area_m2=r["area_m2"],
             source_count=r["source_count"],
             sources=r["sources"],
             confidence_score=r["confidence_score"],
             needs_review=r["needs_review"],
+            height_m=float(r["height_m"]) if r.get("height_m") is not None else None,
+            estimated_floors=r.get("estimated_floors"),
+            elevation_roof_m=float(r["elevation_roof_m"]) if r.get("elevation_roof_m") is not None else None,
+            elevation_ground_m=float(r["elevation_ground_m"]) if r.get("elevation_ground_m") is not None else None,
         )
         for r in rows
     ]
@@ -127,32 +134,123 @@ def get_entities_clustered(
     ]
 
 
-@router.get("/{canonical_uid}", response_model=EntityDetail)
-def get_entity_detail(canonical_uid: str):
-    """Full detail for one entity, including the score breakdown
-    (avg_match_score, avg_iou_agreement) needed for the click-through
-    panel — both are None for a single-source entity that was never
-    matched, which the frontend should render as 'never cross-validated'
-    rather than as a numeric 0."""
-    query = """
-        SELECT canonical_uid,
+def _normalize_search_term(term: str) -> str:
+    """Normalize input string:
+    - Normalizes Unicode NFKD (converts stylized / mathematical bold / italic e.g. 𝐓𝐃𝐑𝟏𝐖𝟕𝐁𝟓𝟐𝐄 to standard ASCII TDR1W7B52E)
+    - Strips whitespace
+    """
+    if not term:
+        return ""
+    return unicodedata.normalize("NFKD", term).strip()
+
+
+@router.get("/search", response_model=list[EntitySummary])
+def search_entities(
+    q: str = Query(..., min_length=1, description="Search query: 14-digit Bhu-Aadhar, 10-char PNIU suffix, or canonical UID"),
+    limit: int = Query(20, le=100, ge=1),
+):
+    """Searches canonical entities across Bangalore by Bhu-Aadhar or canonical_uid.
+    Supports:
+    - Full 14-digit Bhu-Aadhar (e.g. 2920TDR1W7B52E)
+    - 10-character PNIU centroid geohash suffix (e.g. TDR1W7B52E)
+    - Stylized / mathematical unicode font input (e.g. 𝐓𝐃𝐑𝟏𝐖𝟕𝐁𝟓𝟐𝐄)
+    - Partial prefix or suffix matches
+    - UUID / canonical_uid
+    """
+    cleaned = _normalize_search_term(q)
+    if not cleaned:
+        return []
+
+    pattern = f"%{cleaned}%"
+    suffix = f"%{cleaned}"
+
+    query = f"""
+        SELECT canonical_uid, bhu_aadhar,
                ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geojson,
-               area_m2, source_count, sources, member_feature_ids,
-               avg_match_score, avg_iou_agreement, confidence_score,
-               needs_review, tile_id
+               area_m2, source_count, sources, confidence_score, needs_review,
+               height_m, estimated_floors, elevation_roof_m, elevation_ground_m
         FROM canonical_entities
-        WHERE canonical_uid = %(canonical_uid)s
+        WHERE bhu_aadhar ILIKE %(pattern)s
+           OR canonical_uid ILIKE %(pattern)s
+        ORDER BY
+            CASE
+                WHEN bhu_aadhar ILIKE %(exact)s THEN 1
+                WHEN bhu_aadhar ILIKE %(suffix)s THEN 2
+                WHEN canonical_uid ILIKE %(exact)s THEN 3
+                ELSE 4
+            END,
+            confidence_score DESC
+        LIMIT %(limit)s
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(query, {"canonical_uid": canonical_uid})
+            cur.execute(query, {
+                "pattern": pattern,
+                "exact": cleaned,
+                "suffix": suffix,
+                "limit": limit,
+            })
+            rows = cur.fetchall()
+
+    return [
+        EntitySummary(
+            canonical_uid=r["canonical_uid"],
+            bhu_aadhar=r.get("bhu_aadhar"),
+            geometry=json.loads(r["geojson"]),
+            area_m2=r["area_m2"],
+            source_count=r["source_count"],
+            sources=r["sources"],
+            confidence_score=r["confidence_score"],
+            needs_review=r["needs_review"],
+            height_m=float(r["height_m"]) if r.get("height_m") is not None else None,
+            estimated_floors=r.get("estimated_floors"),
+            elevation_roof_m=float(r["elevation_roof_m"]) if r.get("elevation_roof_m") is not None else None,
+            elevation_ground_m=float(r["elevation_ground_m"]) if r.get("elevation_ground_m") is not None else None,
+        )
+        for r in rows
+    ]
+
+
+@router.get("/{canonical_uid}", response_model=EntityDetail)
+def get_entity_detail(canonical_uid: str):
+    """Full detail for one entity by canonical_uid or bhu_aadhar.
+    Accepts full 14-char Bhu-Aadhar, 10-char PNIU suffix, or UUID,
+    handling any mathematical / unicode stylized formatting."""
+    cleaned = _normalize_search_term(canonical_uid)
+
+    query = """
+        SELECT canonical_uid, bhu_aadhar,
+               ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geojson,
+               area_m2, source_count, sources, member_feature_ids,
+               avg_match_score, avg_iou_agreement, confidence_score,
+               needs_review, tile_id,
+               height_m, estimated_floors, elevation_roof_m, elevation_ground_m
+        FROM canonical_entities
+        WHERE canonical_uid ILIKE %(identifier)s
+           OR bhu_aadhar ILIKE %(identifier)s
+           OR bhu_aadhar ILIKE %(suffix)s
+        ORDER BY
+            CASE
+                WHEN bhu_aadhar ILIKE %(identifier)s THEN 1
+                WHEN canonical_uid ILIKE %(identifier)s THEN 2
+                ELSE 3
+            END
+        LIMIT 1
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, {
+                "identifier": cleaned,
+                "suffix": f"%{cleaned}",
+            })
             row = cur.fetchone()
 
     if row is None:
-        raise HTTPException(status_code=404, detail=f"No entity with canonical_uid={canonical_uid}")
+        raise HTTPException(status_code=404, detail=f"No entity with identifier={canonical_uid} (cleaned: {cleaned})")
 
     return EntityDetail(
         canonical_uid=row["canonical_uid"],
+        bhu_aadhar=row.get("bhu_aadhar"),
         geometry=json.loads(row["geojson"]),
         area_m2=row["area_m2"],
         source_count=row["source_count"],
@@ -163,6 +261,10 @@ def get_entity_detail(canonical_uid: str):
         avg_match_score=row["avg_match_score"],
         avg_iou_agreement=row["avg_iou_agreement"],
         tile_id=row["tile_id"],
+        height_m=float(row["height_m"]) if row.get("height_m") is not None else None,
+        estimated_floors=row.get("estimated_floors"),
+        elevation_roof_m=float(row["elevation_roof_m"]) if row.get("elevation_roof_m") is not None else None,
+        elevation_ground_m=float(row["elevation_ground_m"]) if row.get("elevation_ground_m") is not None else None,
     )
     
 @router.patch("/{canonical_uid}/resolve", response_model=ResolveResponse)

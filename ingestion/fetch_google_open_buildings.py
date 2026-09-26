@@ -34,54 +34,93 @@ from config import DISTRICT_BBOX, EE_PROJECT, CRS_LATLON, CRS_PROJECTED, SCRATCH
 _MAX_ELEMENTS_ERROR_SNIPPET = "accumulating over 5000 elements"
 
 
-def _fetch_tile_geojson(min_lon, min_lat, max_lon, max_lat, depth=0):
-    """Fetch one bbox tile; recursively split into 4 quadrants on overflow."""
+def _fetch_single_tile(min_lon: float, min_lat: float, max_lon: float, max_lat: float, depth: int = 0) -> gpd.GeoDataFrame:
+    """Fetch one small bbox tile; cache to disk; split into 4 if it hits 5000 elements."""
+    tmp_path = SCRATCH_DIR / f"_gob_tile_{min_lon:.5f}_{min_lat:.5f}_{max_lon:.5f}_{max_lat:.5f}.geojson"
+    if tmp_path.exists() and tmp_path.stat().st_size > 100:
+        try:
+            return gpd.read_file(str(tmp_path))
+        except Exception:
+            pass
+
     region = ee.Geometry.BBox(min_lon, min_lat, max_lon, max_lat)
     buildings_fc = ee.FeatureCollection(
         "GOOGLE/Research/open-buildings/v3/polygons"
     ).filterBounds(region)
 
-    tmp_path = str(SCRATCH_DIR / f"_gob_raw_tmp_{depth}_{min_lon}_{min_lat}.geojson")
     try:
-        geemap.ee_to_geojson(buildings_fc, filename=tmp_path)
+        geemap.ee_to_geojson(buildings_fc, filename=str(tmp_path))
     except Exception as e:
-        if _MAX_ELEMENTS_ERROR_SNIPPET in str(e):
-            indent = "  " * (depth + 1)
-            print(f"{indent}[GOB] Tile too dense at depth {depth}, splitting into 4...")
+        if _MAX_ELEMENTS_ERROR_SNIPPET in str(e) and depth < 3:
             mid_lon = (min_lon + max_lon) / 2
             mid_lat = (min_lat + max_lat) / 2
-            gdfs = []
-            for sub in [
+            subs = [
                 (min_lon, min_lat, mid_lon, mid_lat),
                 (mid_lon, min_lat, max_lon, mid_lat),
                 (min_lon, mid_lat, mid_lon, max_lat),
                 (mid_lon, mid_lat, max_lon, max_lat),
-            ]:
-                gdfs.append(_fetch_tile_geojson(*sub, depth=depth + 1))
-            return pd.concat(gdfs, ignore_index=True)
+            ]
+            sub_gdfs = [_fetch_single_tile(*sub, depth=depth + 1) for sub in subs]
+            sub_gdfs = [g for g in sub_gdfs if not g.empty]
+            return pd.concat(sub_gdfs, ignore_index=True) if sub_gdfs else gpd.GeoDataFrame()
         raise
 
-    gdf = gpd.read_file(tmp_path)
-    return gdf
+    if tmp_path.exists() and tmp_path.stat().st_size > 100:
+        return gpd.read_file(str(tmp_path))
+    return gpd.GeoDataFrame()
 
 
 def fetch_google_open_buildings(
     bbox: tuple[float, float, float, float] = DISTRICT_BBOX,
     project: str = EE_PROJECT,
+    tile_size_deg: float = 0.01,
+    max_workers: int = 8,
 ) -> gpd.GeoDataFrame:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from tqdm import tqdm
+
     ee.Initialize(project=project)
 
     min_lon, min_lat, max_lon, max_lat = bbox
     print(f"[GOB] Querying Google Open Buildings for district bbox: {bbox}")
 
-    gdf = _fetch_tile_geojson(min_lon, min_lat, max_lon, max_lat)
+    # Generate regular 0.01-degree grid tiles to keep each request well under 5000 buildings
+    import numpy as np
+    lons = np.arange(min_lon, max_lon, tile_size_deg)
+    lats = np.arange(min_lat, max_lat, tile_size_deg)
 
-    if gdf.empty:
+    tile_coords = []
+    for x in lons:
+        x2 = min(x + tile_size_deg, max_lon)
+        for y in lats:
+            y2 = min(y + tile_size_deg, max_lat)
+            tile_coords.append((float(x), float(y), float(x2), float(y2)))
+
+    print(f"[GOB] Fetching {len(tile_coords)} tiles in parallel using {max_workers} threads...")
+
+    gdfs = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_fetch_single_tile, *tc): tc for tc in tile_coords}
+        with tqdm(total=len(futures), desc="[GOB] Downloading tiles", unit="tile") as pbar:
+            for future in as_completed(futures):
+                try:
+                    res = future.result()
+                    if not res.empty:
+                        gdfs.append(res)
+                except Exception as exc:
+                    tc = futures[future]
+                    print(f"\n[GOB] Tile {tc} generated an exception: {exc}")
+                pbar.update(1)
+
+    if not gdfs:
         raise RuntimeError(
             "No Google Open Buildings found for this district bbox — check "
             "coverage or EE authentication."
         )
 
+    print("[GOB] Concatenating and cleaning fetched footprints...")
+    gdf = pd.concat(gdfs, ignore_index=True)
+    gdf = gpd.GeoDataFrame(gdf, geometry="geometry")
     gdf = gdf.set_crs(CRS_LATLON) if gdf.crs is None else gdf.to_crs(CRS_LATLON)
 
     # Tiles can share buildings that sit on a shared boundary (filterBounds

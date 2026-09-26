@@ -61,35 +61,38 @@ def insert_raw_features(gdf: gpd.GeoDataFrame, tile_id: str | None = None) -> No
         print("[normalize] Nothing to insert — empty GeoDataFrame")
         return
 
-    rows = [
-        (
-            row["entity_uid"],
-            row["source"],
-            row["feature_type"],
-            row.get("building_type"),
-            float(row["area_m2"]) if row["area_m2"] is not None else None,
-            float(row["extraction_confidence"]) if row.get("extraction_confidence") not in (None, "") else None,
-            float(row["centroid_x"]),
-            float(row["centroid_y"]),
-            row.geometry.wkt,
-            tile_id,
-        )
-        for _, row in gdf.iterrows()
+    source = gdf["source"].iloc[0] if len(gdf) else "n/a"
+    from tqdm import tqdm
+
+    # Fast column extraction instead of slow row-by-row iterrows()
+    wkts = [g.wkt for g in gdf.geometry]
+    ext_confs = [
+        float(v) if v not in (None, "") and str(v).replace('.', '', 1).isdigit() else None
+        for v in gdf.get("extraction_confidence", [None] * len(gdf))
     ]
+    building_types = gdf.get("building_type", [None] * len(gdf)).tolist()
+    areas = gdf["area_m2"].astype(float).tolist()
+    cx = gdf["centroid_x"].astype(float).tolist()
+    cy = gdf["centroid_y"].astype(float).tolist()
+    uids = gdf["entity_uid"].tolist()
+    sources = gdf["source"].tolist()
+    ftypes = gdf["feature_type"].tolist()
+
+    rows = list(zip(uids, sources, ftypes, building_types, areas, ext_confs, cx, cy, wkts, [tile_id] * len(gdf)))
+
+    CHUNK_SIZE = 5000
+    insert_sql = f"""
+        INSERT INTO raw_features
+            (entity_uid, source, feature_type, building_type, area_m2,
+             extraction_confidence, centroid_x, centroid_y, geom, tile_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, ST_GeomFromText(%s, {MATCH_SRID}), %s)
+        ON CONFLICT (entity_uid) DO NOTHING
+    """
 
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.executemany(
-                f"""
-                INSERT INTO raw_features
-                    (entity_uid, source, feature_type, building_type, area_m2,
-                     extraction_confidence, centroid_x, centroid_y, geom, tile_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, ST_GeomFromText(%s, {MATCH_SRID}), %s)
-                ON CONFLICT (entity_uid) DO NOTHING
-                """,
-                rows,
-            )
-        conn.commit()
+            for i in tqdm(range(0, len(rows), CHUNK_SIZE), desc=f"[normalize] Inserting {source} features", unit="chunk"):
+                cur.executemany(insert_sql, rows[i:i + CHUNK_SIZE])
+                conn.commit()
 
-    source = gdf["source"].iloc[0] if len(gdf) else "n/a"
     print(f"[normalize] Inserted up to {len(rows)} rows into raw_features (source={source})")

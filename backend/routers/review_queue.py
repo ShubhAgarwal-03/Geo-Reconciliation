@@ -36,7 +36,7 @@ def get_review_queue(
     bbox_given = all(v is not None for v in (min_lon, min_lat, max_lon, max_lat))
 
     query = f"""
-        SELECT canonical_uid,
+        SELECT canonical_uid, bhu_aadhar,
                ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geojson,
                area_m2, source_count, sources, confidence_score, needs_review
         FROM canonical_entities
@@ -63,6 +63,7 @@ def get_review_queue(
     return [
         EntitySummary(
             canonical_uid=r["canonical_uid"],
+            bhu_aadhar=r.get("bhu_aadhar"),
             geometry=json.loads(r["geojson"]),
             area_m2=r["area_m2"],
             source_count=r["source_count"],
