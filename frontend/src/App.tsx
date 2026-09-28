@@ -1,18 +1,12 @@
-import React, { useState } from 'react';
-import { 
-  BuildingEntity, 
-  ActiveTab, 
-  Language, 
-  UploadedFile, 
-  ReconciliationStats,
-  ActivityEntry,
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  BuildingEntity, ActiveTab, Language, UploadedFile, DatasetStats, ActivityEntry, BuildingStatus,
 } from './types';
-import { 
-  generateGridBuildings, 
-  initialStats, 
-  initialUploadedFiles 
-} from './data/mockBuildings';
-import { useLiveBuildings } from './hooks/useLiveBuildings';
+import { useLiveBuildings, loadReviewQueue, Viewport } from './hooks/useLiveBuildings';
+import { adaptStats, applyDetail } from './api/adapter';
+import {
+  checkHealth, fetchStats, fetchEntityDetail, fetchEntityMembers, resolveEntity,
+} from './api/geoReconciliationClient';
 import { Navbar } from './components/Navbar';
 import { NavigationTabs } from './components/NavigationTabs';
 import { DashboardView } from './components/DashboardView';
@@ -28,344 +22,259 @@ import { DigitalLandEntityModal } from './components/DigitalLandEntityModal';
 import { TechnicalDetailsModal } from './components/TechnicalDetailsModal';
 import { HistoryModal } from './components/HistoryModal';
 import { DemoTourModal } from './components/DemoTourModal';
-import { resolveEntity } from './api/geoReconciliationClient';
+import { shortId } from './data/sources';
+
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export default function App() {
-  // Navigation & Localization
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [language, setLanguage] = useState<Language>('en');
+  const [showBeforeAfterDirect, setShowBeforeAfterDirect] = useState(false);
 
-  // Core Data State — pulls from the Geo-Reconciliation API when reachable,
-  // silently falls back to mock data otherwise (see useLiveBuildings).
-  const { buildings: liveBuildings, source: dataSource, refetch: refetchBuildings } = useLiveBuildings();
-  const [buildings, setBuildings] = useState<BuildingEntity[]>([]);
-  const [isResolving, setIsResolving] = useState(false);
-
-  // Mirror the hook's data into local state so approve/reject can optimistically
-  // update one entity without waiting for a full re-fetch.
-  React.useEffect(() => {
-    setBuildings(liveBuildings);
-  }, [liveBuildings]);
-
-    // `stats` still seeds a handful of fields with no real backend source at
-    // all (conflictsDetected, autoResolved, before/after confidence & conflict
-    // counts — pipeline_runs doesn't store these, see reconcile.py). Those
-    // stay demo-baseline values and are clearly labeled as such in the UI.
-    const [stats, setStats] = useState<ReconciliationStats>(initialStats);
-    const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>(initialUploadedFiles);
-
-  // The four dashboard headline numbers, real-derived from the actual
-  // buildings array on every render — never trusted from mock `stats`.
-  // Only conflictsDetected/autoResolved/before-after fields (no backend
-  // source yet) fall through from `stats`.
-  const derivedStats = React.useMemo<ReconciliationStats>(() => {
-    const totalBuildings = buildings.length;
-    const matched = buildings.filter(b => b.status === 'reconciled').length;
-    const requiresReview = buildings.filter(b => b.status === 'review' || b.status === 'conflict').length;
-    const averageConfidence = totalBuildings > 0
-      ? Math.round(buildings.reduce((sum, b) => sum + b.confidence, 0) / totalBuildings)
-      : 0;
-    return { ...stats, totalBuildings, matched, requiresReview, averageConfidence };
-  }, [buildings, stats]);
-
-    // Real session activity log — populated by actions below (approve,
-    // reject, upload, reconcile), not a static fake feed.
-    const [activityLog, setActivityLog] = useState<ActivityEntry[]>([]);
-    const logActivity = (entry: Omit<ActivityEntry, 'id' | 'timestamp'>) => {
-      setActivityLog(prev => [
-        { id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, timestamp: Date.now(), ...entry },
-        ...prev,
-      ].slice(0, 20));
+  // ---- API health (handles Render cold starts: keep retrying until it answers)
+  const [apiStatus, setApiStatus] = useState<'checking' | 'ok' | 'down'>('checking');
+  useEffect(() => {
+    if (apiStatus === 'ok') return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const ping = async () => {
+      try {
+        const h = await checkHealth();
+        if (cancelled) return;
+        if (h.status === 'ok') { setApiStatus('ok'); return; }
+        setApiStatus('down');
+      } catch {
+        if (!cancelled) setApiStatus('down');
+      }
+      timer = window.setTimeout(ping, 5000);
     };
+    ping();
+    return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
+  }, [apiStatus]);
 
-  // Selection & Modal States
-  const [selectedBuilding, setSelectedBuilding] = useState<BuildingEntity | null>(() => {
-    // Default to showcase building BLD-1028
-    const grid = generateGridBuildings();
-    return grid.find(b => b.id === 'BLD-1028') || grid[0];
-  });
+  // ---- Map-driven entity loading (no mock / OSM fallback)
+  const [viewport, setViewport] = useState<Viewport | null>(null);
+  const {
+    buildings, setBuildings, loading, error: buildingsError, truncated, tooZoomedOut, refetch,
+  } = useLiveBuildings(viewport);
 
-  // Once real data (or the mock fallback) has loaded, make sure a building
-  // is selected — the buildings array is empty for an instant on first render
-  // while useLiveBuildings is fetching.
-  React.useEffect(() => {
-    if (buildings.length === 0) return;
-    setSelectedBuilding((prev) => {
-      if (prev && buildings.some((b) => b.id === prev.id)) return prev;
-      return buildings.find((b) => b.id === 'BLD-1028') || buildings[0];
-    });
-  }, [buildings]);
+  // ---- Dataset-wide stats come from the database, not from the loaded page
+  const [stats, setStats] = useState<DatasetStats | null>(null);
+  const [statsError, setStatsError] = useState<string | null>(null);
+  const loadStats = useCallback(async () => {
+    try { setStats(adaptStats(await fetchStats())); setStatsError(null); }
+    catch (e) { setStatsError(errMsg(e)); }
+  }, []);
+  useEffect(() => { loadStats(); }, [loadStats, apiStatus]);
 
+  // ---- Review queue is its own endpoint
+  const [reviewItems, setReviewItems] = useState<BuildingEntity[]>([]);
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const loadReview = useCallback(async () => {
+    setReviewLoading(true);
+    try { setReviewItems(await loadReviewQueue()); setReviewError(null); }
+    catch (e) { setReviewError(errMsg(e)); }
+    finally { setReviewLoading(false); }
+  }, []);
+  useEffect(() => { if (activeTab === 'review') loadReview(); }, [activeTab, loadReview]);
+
+  // ---- Selection + lazily loaded detail (members, timestamps, scores)
+  const [selectedBuilding, setSelectedBuilding] = useState<BuildingEntity | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  useEffect(() => {
+    const sel = selectedBuilding;
+    if (!sel || sel.detailLoaded) return;
+    let cancelled = false;
+    setDetailError(null);
+    Promise.all([fetchEntityDetail(sel.id), fetchEntityMembers(sel.id).catch(() => null)])
+      .then(([detail, members]) => {
+        if (cancelled) return;
+        if (!members) setDetailError('the /members endpoint is not available');
+        setSelectedBuilding((prev) => (prev && prev.id === sel.id ? applyDetail(prev, detail, members) : prev));
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setDetailError(errMsg(e));
+        setSelectedBuilding((prev) => (prev && prev.id === sel.id ? { ...prev, detailLoaded: true } : prev));
+      });
+    return () => { cancelled = true; };
+  }, [selectedBuilding?.id, selectedBuilding?.detailLoaded]);
+
+  // ---- Session activity log (real events only)
+  const [activityLog, setActivityLog] = useState<ActivityEntry[]>([]);
+  const logActivity = (entry: Omit<ActivityEntry, 'id' | 'timestamp'>) =>
+    setActivityLog((prev) => [
+      { id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, timestamp: Date.now(), ...entry },
+      ...prev,
+    ].slice(0, 20));
+
+  // ---- Modals
   const [showSourcesModal, setShowSourcesModal] = useState(false);
-  const [showReconcileModal, setShowReconcileModal] = useState(false);
   const [showDigitalCardModal, setShowDigitalCardModal] = useState(false);
   const [showTechDetailsModal, setShowTechDetailsModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showDemoTour, setShowDemoTour] = useState(false);
-  const [showBeforeAfterDirect, setShowBeforeAfterDirect] = useState(false);
 
-  // Handlers
-  const handleSelectBuilding = (building: BuildingEntity) => {
-    setSelectedBuilding(building);
+  // ---- Uploads / reconciliation (optional feature; heavy job runs on the backend)
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [reconcileFile, setReconcileFile] = useState<UploadedFile | null>(null);
+
+  const handleAddFile = (f: UploadedFile) => {
+    setUploadedFiles((prev) => [f, ...prev]);
+    logActivity({ type: 'info', title: `Uploaded ${f.name}` });
   };
 
-  const handleSelectBuildingOnMap = (building: BuildingEntity) => {
-    setSelectedBuilding(building);
+  const handleReconciliationComplete = (r?: { canonical_entity_count?: number | null; review_queue_count?: number | null }) => {
+    if (r) logActivity({ type: 'verified', title: `Pipeline run complete — ${r.canonical_entity_count ?? '?'} entities, ${r.review_queue_count ?? 0} flagged for review` });
+    loadStats(); refetch();
     setActiveTab('map');
   };
 
-  const updateBuildingStatus = (id: string, status: BuildingEntity['status']) => {
-  setBuildings(prev => prev.map(b => (b.id === id ? { ...b, status } : b)));
-  setSelectedBuilding(prev => (prev && prev.id === id ? { ...prev, status } : prev));
-};
-
-const handleApprove = async (id: string) => {
-  setIsResolving(true);
-  try {
-    await resolveEntity(id, { status: 'approved' });
-    updateBuildingStatus(id, 'reconciled');
-    logActivity({ type: 'success', title: `Building #${id} approved and reconciled` });
-  } catch (e) {
-    console.error('Failed to approve entity', id, e);
-    logActivity({ type: 'warning', title: `Failed to approve #${id} — ${e instanceof Error ? e.message : 'request failed'}` });
-  } finally {
-    setIsResolving(false);
-  }
-};
-
-const handleReject = async (id: string) => {
-  setIsResolving(true);
-  try {
-    await resolveEntity(id, { status: 'rejected' });
-    updateBuildingStatus(id, 'conflict');
-    logActivity({ type: 'warning', title: `Building #${id} rejected — flagged as conflict` });
-  } catch (e) {
-    console.error('Failed to reject entity', id, e);
-    logActivity({ type: 'warning', title: `Failed to reject #${id} — ${e instanceof Error ? e.message : 'request failed'}` });
-  } finally {
-    setIsResolving(false);
-  }
-};
-
-  const handleReconciliationComplete = (result?: {
-  raw_feature_count?: number | null;
-  canonical_entity_count?: number | null;
-  review_queue_count?: number | null;
-}) => {
-  // NOTE: totalBuildings/requiresReview are NOT set here anymore — they're
-  // always derived live from the real `buildings` array in `derivedStats`
-  // below, so setting them from the reconcile response would just be a
-  // second, possibly-stale source of truth for the same numbers.
-  if (result) {
-    logActivity({
-      type: 'verified',
-      title: `Reconciliation run complete — ${result.canonical_entity_count ?? '?'} entities, ${result.review_queue_count ?? 0} flagged for review`,
-    });
-  }
-  // Pull the freshly reconciled entities into the map/dashboard.
-  refetchBuildings();
-};
-
-  const handleAddFile = (newFile: UploadedFile) => {
-    setUploadedFiles(prev => [newFile, ...prev]);
-    logActivity({ type: 'info', title: `Uploaded ${newFile.name} (${newFile.status})` });
+  // ---- Review decisions (persisted by the API)
+  const [isResolving, setIsResolving] = useState(false);
+  const updateBuildingStatus = (id: string, status: BuildingStatus) => {
+    setBuildings((prev) => prev.map((b) => (b.id === id ? { ...b, status } : b)));
+    setSelectedBuilding((prev) => (prev && prev.id === id ? { ...prev, status } : prev));
+    if (status !== 'review') setReviewItems((prev) => prev.filter((b) => b.id !== id));
+    loadStats();
   };
 
-  // Target showcase building for the demo tour
-  const showcaseBuilding = buildings.find(b => b.id === 'BLD-1028') || buildings[0];
+  const decide = async (id: string, kind: 'approved' | 'rejected') => {
+    setIsResolving(true);
+    try {
+      await resolveEntity(id, { status: kind });
+      updateBuildingStatus(id, kind === 'approved' ? 'reconciled' : 'conflict');
+      logActivity({ type: kind === 'approved' ? 'success' : 'warning', title: `Entity #${shortId(id)} ${kind}` });
+    } catch (e) {
+      logActivity({ type: 'warning', title: `Failed to save decision for #${shortId(id)} — ${errMsg(e)}` });
+    } finally {
+      setIsResolving(false);
+    }
+  };
+
+  const goToEntityOnMap = (b: BuildingEntity) => { setSelectedBuilding(b); setActiveTab('map'); };
+
+  const mapProps = {
+    buildings, selectedBuilding, onSelectBuilding: setSelectedBuilding, language,
+    onViewportChange: setViewport, loading, error: buildingsError, truncated, tooZoomedOut, onRetry: refetch,
+  };
+  const exampleBuilding = buildings.find((b) => b.sourcesCount > 1) ?? buildings[0] ?? null;
 
   return (
     <div className="min-h-screen bg-[#FAF9F6] text-[#2D312E] flex flex-col font-sans selection:bg-[#3A5A40] selection:text-white antialiased">
-      
-      {/* 1. Universal Top Navbar */}
       <Navbar
         language={language}
-        onToggleLanguage={() => setLanguage(l => l === 'en' ? 'hi' : 'en')}
+        apiStatus={apiStatus}
+        onToggleLanguage={() => setLanguage((l) => (l === 'en' ? 'hi' : 'en'))}
         onStartDemoTour={() => setShowDemoTour(true)}
       />
 
-      {/* 2. Primary Navigation Tabs (Dashboard, Map, Data, Review, Reports) */}
+      {apiStatus !== 'ok' && (
+        <div className="bg-[#FFF9F0] border-b border-[#FDEACD] text-[#B07D3E] text-xs font-semibold text-center py-2 px-4">
+          {apiStatus === 'checking'
+            ? 'Connecting to the reconciliation API…'
+            : 'The API is waking up (free hosting can take up to a minute). Retrying automatically…'}
+        </div>
+      )}
+
       <NavigationTabs
         activeTab={showBeforeAfterDirect ? 'dashboard' : activeTab}
-        onTabChange={(tab) => {
-          setShowBeforeAfterDirect(false);
-          setActiveTab(tab);
-        }}
+        onTabChange={(tab) => { setShowBeforeAfterDirect(false); setActiveTab(tab); }}
         language={language}
-        reviewCount={derivedStats.requiresReview}
+        reviewCount={stats?.needsReview ?? 0}
       />
 
-      {/* 3. Main Dynamic Content Views */}
       <main className="flex-1 w-full relative">
-        
-        {/* VIEW A: Before vs After Comparison (when direct toggle or via compare button) */}
         {showBeforeAfterDirect ? (
-          <BeforeAfterView
-            buildings={buildings}
-            stats={derivedStats}
-            language={language}
-            onGoToMap={() => {
-              setShowBeforeAfterDirect(false);
-              setActiveTab('map');
-            }}
-          />
+          <BeforeAfterView buildings={buildings} stats={stats} language={language}
+            onGoToMap={() => { setShowBeforeAfterDirect(false); setActiveTab('map'); }} />
         ) : (
           <>
-            {/* VIEW 1: Dashboard View */}
             {activeTab === 'dashboard' && (
               <DashboardView
-                buildings={buildings}
-                stats={derivedStats}
-                dataSource={dataSource}
-                activityLog={activityLog}
-                showcaseBuilding={showcaseBuilding}
-                selectedBuilding={selectedBuilding}
-                onSelectBuilding={handleSelectBuilding}
+                stats={stats} statsError={statsError} activityLog={activityLog}
+                mapProps={mapProps} selectedBuilding={selectedBuilding}
                 language={language}
                 onOpenUpload={() => setActiveTab('data')}
-                onOpenReconciliation={() => setShowReconcileModal(true)}
                 onGoToBeforeAfter={() => setShowBeforeAfterDirect(true)}
                 onGoToFullMap={() => setActiveTab('map')}
                 onGoToReview={() => setActiveTab('review')}
               />
             )}
 
-            {/* VIEW 2: Interactive Map View */}
             {activeTab === 'map' && (
               <div className="flex flex-col lg:flex-row h-[calc(100vh-122px)] w-full overflow-hidden">
-                {/* Left/Center: The Interactive Map */}
-                <div className="flex-1 h-full relative">
-                  <InteractiveMap
-                    buildings={buildings}
-                    selectedBuilding={selectedBuilding}
-                    onSelectBuilding={handleSelectBuilding}
-                    language={language}
-                    onOpenReconcileModal={() => setShowReconcileModal(true)}
-                    onOpenUploadModal={() => setActiveTab('data')}
-                    dataSource={dataSource}
-                  />
-                </div>
-
-                {/* Right: Building Detail & Source Agreement Panel */}
+                <div className="flex-1 h-full relative"><InteractiveMap {...mapProps} /></div>
                 <div className="w-full lg:w-96 border-t lg:border-t-0 lg:border-l border-[#E8E6E1] bg-white h-auto lg:h-full overflow-hidden shrink-0 shadow-sm z-20">
                   <BuildingDetailPanel
-  building={selectedBuilding}
-  onClose={() => setSelectedBuilding(null)}
-  language={language}
-  onViewSources={() => setShowSourcesModal(true)}
-  onOpenReconcile={() => setShowReconcileModal(true)}
-  onOpenDigitalCard={() => setShowDigitalCardModal(true)}
-  onOpenTechnicalDetails={() => setShowTechDetailsModal(true)}
-  onOpenHistory={() => setShowHistoryModal(true)}
-  onApprove={handleApprove}
-  onReject={handleReject}
-  isResolving={isResolving}
-/>
+                    building={selectedBuilding} detailError={detailError} language={language}
+                    onClose={() => setSelectedBuilding(null)}
+                    onViewSources={() => setShowSourcesModal(true)}
+                    onOpenDigitalCard={() => setShowDigitalCardModal(true)}
+                    onOpenTechnicalDetails={() => setShowTechDetailsModal(true)}
+                    onOpenHistory={() => setShowHistoryModal(true)}
+                    onApprove={(id) => decide(id, 'approved')}
+                    onReject={(id) => decide(id, 'rejected')}
+                    isResolving={isResolving}
+                  />
                 </div>
               </div>
             )}
 
-            {/* VIEW 3: Data Upload View */}
             {activeTab === 'data' && (
               <DataUploadView
-                uploadedFiles={uploadedFiles}
-                onAddFile={handleAddFile}
-                language={language}
-                onGoToReconcile={() => setShowReconcileModal(true)}
+                uploadedFiles={uploadedFiles} stats={stats} onAddFile={handleAddFile}
+                language={language} onRunReconcile={(f) => setReconcileFile(f)}
               />
             )}
 
-            {/* VIEW 4: Review Queue View */}
             {activeTab === 'review' && (
               <ReviewQueueView
-                buildings={buildings}
-                onSelectBuildingOnMap={handleSelectBuildingOnMap}
+                buildings={reviewItems} loading={reviewLoading} error={reviewError} onRetry={loadReview}
+                onSelectBuildingOnMap={goToEntityOnMap}
                 onResolved={(id, status) => {
                   updateBuildingStatus(id, status);
-                  logActivity({ type: 'success', title: `Building #${id} resolved from review queue` });
+                  logActivity({ type: 'success', title: `Entity #${shortId(id)} resolved from the review queue` });
                 }}
                 language={language}
               />
             )}
 
-            {/* VIEW 5: Reports Analytics View */}
             {activeTab === 'reports' && (
-              <ReportsView
-                buildings={buildings}
-                stats={derivedStats}
-                language={language}
-              />
+              <ReportsView stats={stats} statsError={statsError} buildings={buildings} language={language} />
             )}
           </>
         )}
-
       </main>
 
-      {/* 4. MODALS & SLIDE-OVERS */}
-
-      {/* Modal 1: Source Comparison Modal (Before vs After individual building footprints) */}
       {showSourcesModal && selectedBuilding && (
-        <SourceComparisonModal
-          building={selectedBuilding}
-          onClose={() => setShowSourcesModal(false)}
-          language={language}
-        />
+        <SourceComparisonModal building={selectedBuilding} onClose={() => setShowSourcesModal(false)} language={language} />
       )}
-
-      {/* Modal 2: 7-Stage Reconciliation Pipeline Visualizer Modal */}
-      {showReconcileModal && (
-  <ReconciliationModal
-    onClose={() => setShowReconcileModal(false)}
-    language={language}
-    onComplete={handleReconciliationComplete}
-  />
-)}
-
-      {/* Modal 3: Official Digital Land Entity Certificate Card Modal */}
+      {reconcileFile && (
+        <ReconciliationModal file={reconcileFile} language={language}
+          onClose={() => setReconcileFile(null)} onComplete={handleReconciliationComplete} />
+      )}
       {showDigitalCardModal && selectedBuilding && (
-        <DigitalLandEntityModal
-          building={selectedBuilding}
+        <DigitalLandEntityModal building={selectedBuilding} language={language}
           onClose={() => setShowDigitalCardModal(false)}
-          language={language}
-          onViewSources={() => setShowSourcesModal(true)}
-        />
+          onViewSources={() => setShowSourcesModal(true)} />
       )}
-
-      {/* Modal 4: Advanced GIS Technical Details & Engineering Metrics Modal */}
       {showTechDetailsModal && selectedBuilding && (
-        <TechnicalDetailsModal
-          building={selectedBuilding}
-          onClose={() => setShowTechDetailsModal(false)}
-          language={language}
-        />
+        <TechnicalDetailsModal building={selectedBuilding} onClose={() => setShowTechDetailsModal(false)} language={language} />
       )}
-
-      {/* Modal 5: Audit History Trail Modal */}
       {showHistoryModal && selectedBuilding && (
-        <HistoryModal
-          building={selectedBuilding}
-          onClose={() => setShowHistoryModal(false)}
-          language={language}
-        />
+        <HistoryModal building={selectedBuilding} onClose={() => setShowHistoryModal(false)} language={language} />
       )}
-
-      {/* Modal 6: 14-Step Guided Hackathon Demo Tour */}
       {showDemoTour && (
         <DemoTourModal
-          onClose={() => setShowDemoTour(false)}
-          onNavigateTab={(tab) => {
-            setShowBeforeAfterDirect(false);
-            setActiveTab(tab);
-          }}
-          onSelectBuilding={handleSelectBuilding}
-          showcaseBuilding={showcaseBuilding}
+          onClose={() => setShowDemoTour(false)} language={language} stats={stats}
+          example={exampleBuilding}
+          onNavigateTab={(tab) => { setShowBeforeAfterDirect(false); setActiveTab(tab); }}
+          onSelectBuilding={setSelectedBuilding}
           onOpenSourcesModal={() => setShowSourcesModal(true)}
-          onOpenReconciliationModal={() => setShowReconcileModal(true)}
-          onOpenDigitalCard={() => setShowDigitalCardModal(true)}
-          language={language}
         />
       )}
-
     </div>
   );
 }

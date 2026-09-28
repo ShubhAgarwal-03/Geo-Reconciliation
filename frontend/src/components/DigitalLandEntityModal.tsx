@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { sourceLabel, fmtArea, shortId } from '../data/sources';
 import { BuildingEntity, Language } from '../types';
 import { translations } from '../data/i18n';
 import { 
   X, 
   Download, 
-  QrCode, 
   CheckCircle2, 
   ShieldCheck, 
   Compass, 
@@ -30,23 +30,30 @@ export const DigitalLandEntityModal: React.FC<DigitalLandEntityModalProps> = ({
 }) => {
   const t = translations[language];
   const [copied, setCopied] = useState(false);
+  const [fingerprint, setFingerprint] = useState<string>('…');
+
+  // Real SHA-256 over the entity id + reconciled geometry (integrity fingerprint).
+  useEffect(() => {
+    const data = new TextEncoder().encode(building.id + JSON.stringify(building.coordinates));
+    crypto.subtle.digest('SHA-256', data).then((buf) => {
+      setFingerprint(Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join(''));
+    }).catch(() => setFingerprint('unavailable'));
+  }, [building.id, building.coordinates]);
+
+  const props = () => ({
+    id: building.id,
+    areaM2: building.area,
+    confidence: building.confidence,
+    status: building.status,
+    sources: building.sourceNames,
+    sourceAgreementPct: building.agreementScore,
+    sha256: fingerprint,
+  });
 
   const handleCopyGeoJson = () => {
     const geojson = {
       type: "Feature",
-      properties: {
-        id: building.id,
-        surveyNumber: building.surveyNumber,
-        wardNo: building.wardNo,
-        zone: building.zone,
-        areaM2: building.area,
-        landUse: building.landUse,
-        heightMeters: building.height,
-        confidence: building.confidence,
-        status: building.status,
-        ecosystem: "NAKSHA / Urban Land Records",
-        hash: `0x7F${building.id.replace(/[^0-9]/g, '')}D9C2A`,
-      },
+      properties: props(),
       geometry: {
         type: "Polygon",
         coordinates: [building.coordinates.map(([lat, lng]) => [lng, lat])],
@@ -64,14 +71,7 @@ export const DigitalLandEntityModal: React.FC<DigitalLandEntityModalProps> = ({
       features: [
         {
           type: "Feature",
-          properties: {
-            id: building.id,
-            surveyNumber: building.surveyNumber,
-            areaM2: building.area,
-            landUse: building.landUse,
-            confidence: building.confidence,
-            verified: true,
-          },
+          properties: props(),
           geometry: {
             type: "Polygon",
             coordinates: [building.coordinates.map(([lat, lng]) => [lng, lat])],
@@ -84,7 +84,7 @@ export const DigitalLandEntityModal: React.FC<DigitalLandEntityModalProps> = ({
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `NAKSHA_${building.id}_Reconciled.geojson`;
+    a.download = `LandLens_${shortId(building.id)}.geojson`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -98,7 +98,7 @@ export const DigitalLandEntityModal: React.FC<DigitalLandEntityModalProps> = ({
           <div className="flex items-center gap-2">
             <Compass className="w-5 h-5 text-[#3A5A40]" />
             <span className="font-serif font-bold text-sm text-[#1B2B1F] tracking-tight">
-              NAKSHA Digital Land Record Identity
+              Entity record card
             </span>
           </div>
           <button
@@ -118,15 +118,15 @@ export const DigitalLandEntityModal: React.FC<DigitalLandEntityModalProps> = ({
             <div className="flex items-start justify-between pb-4 border-b border-[#2D4632]">
               <div>
                 <span className="text-[10px] uppercase font-mono tracking-widest text-[#BDC9BF] font-bold block">
-                  GOVERNMENT OF INDIA • NAKSHA PORTAL
+                  LANDLENS • PROTOTYPE
                 </span>
                 <h3 className="text-sm font-serif font-bold text-[#FAF9F6] mt-0.5">
-                  URBAN LAND ENTITY CERTIFICATE
+                  RECONCILED BUILDING ENTITY
                 </h3>
               </div>
-              <div className="flex items-center gap-1.5 bg-[#EAF2EA]/20 text-emerald-300 border border-[#BDC9BF]/40 px-2.5 py-1 rounded-full text-xs font-bold">
+              <div className={`flex items-center gap-1.5 border px-2.5 py-1 rounded-full text-xs font-bold ${building.status === 'reconciled' ? 'bg-[#EAF2EA]/20 text-emerald-300 border-[#BDC9BF]/40' : 'bg-[#D9A05B]/20 text-[#D9A05B] border-[#D9A05B]/40'}`}>
                 <ShieldCheck className="w-3.5 h-3.5" />
-                <span>✓ VERIFIED</span>
+                <span>{building.status === 'reconciled' ? '✓ VERIFIED' : building.status === 'review' ? 'PENDING REVIEW' : 'REJECTED'}</span>
               </div>
             </div>
 
@@ -134,61 +134,31 @@ export const DigitalLandEntityModal: React.FC<DigitalLandEntityModalProps> = ({
             <div className="flex items-center justify-between my-5">
               <div>
                 <div className="flex items-center gap-2 text-2xl font-serif font-bold text-white tracking-tight">
-                  <span>🏛️</span>
-                  <span>{building.id}</span>
+                  <span className="font-mono">#{shortId(building.id)}</span>
                 </div>
-                <div className="text-xs text-[#BDC9BF] font-mono mt-0.5">
-                  Survey No: <span className="text-white font-bold">{building.surveyNumber}</span>
-                </div>
-              </div>
-
-              {/* Simulated QR Code Stamp */}
-              <div className="w-16 h-16 bg-white p-1.5 rounded-xl shadow-md flex items-center justify-center">
-                <QrCode className="w-full h-full text-[#1B2B1F]" />
+                <div className="text-[10px] text-[#BDC9BF] font-mono mt-0.5 break-all max-w-[240px]">{building.id}</div>
               </div>
             </div>
 
-            {/* Core Certificate Attributes */}
+            {/* Core attributes */}
             <div className="grid grid-cols-2 gap-3 text-xs bg-[#17231B] p-4 rounded-2xl border border-[#2D4632]">
-              <div>
-                <span className="text-[10px] uppercase font-bold text-[#BDC9BF] block">Area</span>
-                <span className="text-base font-serif font-bold text-white font-mono">{building.area} m²</span>
-              </div>
-
-              <div>
-                <span className="text-[10px] uppercase font-bold text-[#BDC9BF] block">Land Use</span>
-                <span className="text-base font-serif font-bold text-white">{building.landUse}</span>
-              </div>
-
-              <div>
-                <span className="text-[10px] uppercase font-bold text-[#BDC9BF] block">Height</span>
-                <span className="text-base font-serif font-bold text-white font-mono">{building.height} m ({building.floors} fl)</span>
-              </div>
-
-              <div>
-                <span className="text-[10px] uppercase font-bold text-[#BDC9BF] block">Survey Sources</span>
-                <span className="text-base font-serif font-bold text-[#A3B899] font-mono">{building.sourcesCount} Datasets</span>
-              </div>
-
-              <div>
-                <span className="text-[10px] uppercase font-bold text-[#BDC9BF] block">Source Agreement</span>
-                <span className="text-base font-serif font-bold text-[#A3B899] font-mono">{building.agreementScore}%</span>
-              </div>
-
-              <div>
-                <span className="text-[10px] uppercase font-bold text-[#BDC9BF] block">Confidence Score</span>
-                <span className="text-base font-serif font-bold text-emerald-300 font-mono">{building.confidence}%</span>
-              </div>
+              {[
+                ['Area', fmtArea(building.area)],
+                ['Sources', building.sourceNames.map(sourceLabel).join(', ')],
+                ['Source agreement', building.agreementScore == null ? 'n/a (single source)' : `${building.agreementScore}%`],
+                ['Confidence', `${building.confidence}%`],
+              ].map(([k, v]) => (
+                <div key={k}>
+                  <span className="text-[10px] uppercase font-bold text-[#BDC9BF] block">{k}</span>
+                  <span className="text-sm font-serif font-bold text-white">{v}</span>
+                </div>
+              ))}
             </div>
 
             {/* Bottom Metadata & Hash */}
-            <div className="mt-4 pt-3 border-t border-[#2D4632] flex items-center justify-between text-[10px] text-[#BDC9BF] font-mono">
-              <div>
-                Last Updated: <span className="text-white font-bold">{building.lastUpdated}</span>
-              </div>
-              <div>
-                Hash: <span className="text-[#A3B899]">0x7F{building.id.replace(/[^0-9]/g, '')}D9C</span>
-              </div>
+            <div className="mt-4 pt-3 border-t border-[#2D4632] text-[10px] text-[#BDC9BF] font-mono space-y-1">
+              <div>SHA-256: <span className="text-[#A3B899] break-all">{fingerprint}</span></div>
+              <div className="text-[#D9A05B]">Prototype record — not an official government document.</div>
             </div>
 
           </div>

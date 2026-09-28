@@ -1,23 +1,26 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, CheckCircle2, Loader2, Cpu, ArrowRight } from 'lucide-react';
-import { Language } from '../types';
+import { Language, UploadedFile } from '../types';
 import { translations } from '../data/i18n';
 import { triggerReconcile, getReconcileStatus, ReconcileResponse } from '../api/geoReconciliationClient';
 
+
+const MAX_WAIT_MS = 20 * 60 * 1000;
 
 interface ReconciliationModalProps {
   onClose: () => void;
   language: Language;
   onComplete: (result?: { raw_feature_count?: number | null; canonical_entity_count?: number | null; review_queue_count?: number | null }) => void;
-  uploadedFilePath?: string;
+  file: UploadedFile;
 }
 
 export const ReconciliationModal: React.FC<ReconciliationModalProps> = ({
   onClose,
   language,
   onComplete,
-  uploadedFilePath,
+  file,
 }) => {
+  const uploadedFilePath = file.storedPath;
   const t = translations[language];
   const [status, setStatus] = useState<'starting' | 'running' | 'complete' | 'error'>('starting');
   const [result, setResult] = useState<ReconcileResponse | null>(null);
@@ -32,6 +35,7 @@ export const ReconciliationModal: React.FC<ReconciliationModalProps> = ({
         const started = await triggerReconcile(uploadedFilePath);
         if (cancelled) return;
         setStatus('running');
+        const startedAt = Date.now();
 
         pollRef.current = window.setInterval(async () => {
           try {
@@ -40,6 +44,14 @@ export const ReconciliationModal: React.FC<ReconciliationModalProps> = ({
             if (s.status === 'complete') {
               setResult(s);
               setStatus('complete');
+              if (pollRef.current) window.clearInterval(pollRef.current);
+            } else if (s.status === 'failed') {
+              setError(s.error || 'The pipeline run failed on the server.');
+              setStatus('error');
+              if (pollRef.current) window.clearInterval(pollRef.current);
+            } else if (Date.now() - startedAt > MAX_WAIT_MS) {
+              setError('This is taking longer than expected. The run may still finish in the background — check the Reports tab later.');
+              setStatus('error');
               if (pollRef.current) window.clearInterval(pollRef.current);
             }
           } catch (e) {
@@ -87,7 +99,7 @@ export const ReconciliationModal: React.FC<ReconciliationModalProps> = ({
         <div className="p-6 overflow-y-auto space-y-5 flex-1">
           {status === 'error' && (
             <div className="p-3.5 rounded-2xl border border-[#F8D7DA] bg-[#FDF2F0] text-[#902A1A] text-xs">
-              Reconciliation failed to start or check status: {error}
+              Reconciliation didn’t finish: {error}
             </div>
           )}
 
@@ -95,10 +107,10 @@ export const ReconciliationModal: React.FC<ReconciliationModalProps> = ({
             <div className="bg-[#1B2B1F] text-white rounded-2xl p-6 shadow-sm border border-[#2D4632] flex flex-col items-center gap-3 text-center">
               <Loader2 className="w-8 h-8 animate-spin text-[#D9A05B]" />
               <span className="text-sm font-bold">
-                {status === 'starting' ? 'Starting pipeline run…' : 'Pipeline running — this can take a while on a full district'}
+                {status === 'starting' ? 'Starting pipeline run…' : 'Pipeline running — please keep this window open'}
               </span>
               <span className="text-[11px] text-[#BDC9BF]">
-                This runs the real matching pipeline (OSM + Google Open Buildings{uploadedFilePath ? ' + your uploaded file' : ''}). No fixed ETA — status updates every few seconds.
+                Running the real matching pipeline with {file.name}. This can take several minutes; there is no fixed ETA. Status is checked every few seconds.
               </span>
             </div>
           )}
@@ -133,7 +145,7 @@ export const ReconciliationModal: React.FC<ReconciliationModalProps> = ({
             disabled={status !== 'complete'}
             className="px-5 py-2 rounded-xl bg-[#3A5A40] hover:bg-[#2D4632] disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold shadow-sm transition active:scale-95 flex items-center gap-1.5"
           >
-            <span>Apply Results & View Map</span>
+            <span>View results on map</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>

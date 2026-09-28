@@ -13,28 +13,23 @@ import {
 } from 'lucide-react';
 import { Language } from '../types';
 import { translations } from '../data/i18n';
+import { DISTRICT_LABEL } from '../config';
 
 interface NavbarProps {
   currentZone?: string;
-  onZoneChange?: (zone: string) => void;
+  apiStatus?: 'checking' | 'ok' | 'down';
   language: Language;
   onLanguageChange?: (lang: Language) => void;
   onToggleLanguage?: () => void;
-  isOnline?: boolean;
-  onToggleOnline?: () => void;
-  onStartReconciliation?: () => void;
   onStartDemoTour: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
-  currentZone = "Ward 112 - Domlur, Bengaluru Urban (Pilot 4)",
-  onZoneChange = (_zone: string) => {},
+  currentZone = DISTRICT_LABEL,
+  apiStatus = 'checking',
   language,
   onLanguageChange,
   onToggleLanguage,
-  isOnline = true,
-  onToggleOnline = () => {},
-  onStartReconciliation = () => {},
   onStartDemoTour,
 }) => {
   const t = translations[language];
@@ -76,25 +71,14 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           </div>
 
-          {/* Center Pilot Zone Selector */}
+          {/* Pilot area (fixed to the loaded dataset) */}
           <div className="hidden md:flex items-center">
-            <div className="relative flex items-center bg-[#F8F9F8] hover:bg-[#F1F3F0] border border-[#E8E6E1] rounded-xl px-3 py-1.5 transition text-sm">
+            <div className="flex items-center bg-[#F8F9F8] border border-[#E8E6E1] rounded-xl px-3 py-1.5 text-sm">
               <Layers className="w-4 h-4 text-[#3A5A40] mr-2 shrink-0" />
               <div className="text-left">
-                <span className="text-[10px] text-[#A3A9A5] font-bold uppercase tracking-wider block">Pilot Zone</span>
-                <select 
-                  aria-label="Pilot Zone"
-                  value={currentZone}
-                  onChange={(e) => onZoneChange(e.target.value)}
-                  className="bg-transparent font-semibold text-[#1B2B1F] focus:outline-none cursor-pointer pr-5 text-xs sm:text-sm"
-                >
-                  <option value="Ward 112 - Domlur, Bengaluru Urban (Pilot 4)">Ward 112 - Domlur, Bengaluru (Pilot 4)</option>
-                  <option value="Lucknow Municipal Zone 4">Lucknow Municipal Zone 4</option>
-                  <option value="Sector 18 - Gandhinagar, Gujarat">Sector 18 - Gandhinagar, Gujarat</option>
-                  <option value="Zone 7 - Civil Lines, Jaipur">Zone 7 - Civil Lines, Jaipur</option>
-                </select>
+                <span className="text-[10px] text-[#A3A9A5] font-bold uppercase tracking-wider block">Pilot area</span>
+                <span className="font-semibold text-[#1B2B1F] text-xs sm:text-sm">{currentZone}</span>
               </div>
-              <ChevronDown className="w-3.5 h-3.5 text-[#A3A9A5] pointer-events-none absolute right-2.5" />
             </div>
           </div>
 
@@ -108,32 +92,21 @@ export const Navbar: React.FC<NavbarProps> = ({
               title="Start guided interactive demonstration"
             >
               <Play className="w-3.5 h-3.5 fill-[#3A5A40] text-[#3A5A40]" />
-              <span className="hidden sm:inline">Guided Demo Tour</span>
+              <span className="hidden sm:inline">Guided tour</span>
               <span className="sm:hidden">Tour</span>
             </button>
 
-            {/* Reconciliation Trigger Action */}
-            <button
-              onClick={onStartReconciliation}
-              className="hidden lg:inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#3A5A40] hover:bg-[#2D4632] text-white text-xs font-bold shadow-sm transition active:scale-95"
+            {/* API status */}
+            <div
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold border ${
+                apiStatus === 'ok' ? 'bg-[#F1F3F0] border-[#E8E6E1] text-[#2D312E]'
+                : apiStatus === 'checking' ? 'bg-[#F1F3F0] border-[#E8E6E1] text-[#5E6660]'
+                : 'bg-[#FFF9F0] border-[#FDEACD] text-[#B07D3E]'}`}
+              title={apiStatus === 'ok' ? 'Connected to the reconciliation API' : apiStatus === 'checking' ? 'Checking API…' : 'API unreachable'}
             >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>{t.startReconciliation}</span>
-            </button>
-
-            {/* Online / Offline Status Toggle */}
-            <button
-              onClick={onToggleOnline}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold border transition ${
-                isOnline 
-                  ? 'bg-[#F1F3F0] border-[#E8E6E1] text-[#2D312E] hover:bg-[#EAF2EA]' 
-                  : 'bg-[#FFF9F0] border-[#FDEACD] text-[#B07D3E] hover:bg-[#faebd7]'
-              }`}
-              title={isOnline ? "System online. Tap to simulate offline mode." : "Offline mode active. Tap to sync."}
-            >
-              <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-[#4CAF50]' : 'bg-[#D9A05B]'}`}></span>
-              <span>{isOnline ? t.online : 'Offline'}</span>
-            </button>
+              <span className={`w-2 h-2 rounded-full ${apiStatus === 'ok' ? 'bg-[#4CAF50]' : apiStatus === 'checking' ? 'bg-[#A3A9A5] animate-pulse' : 'bg-[#D9A05B]'}`}></span>
+              <span>{apiStatus === 'ok' ? t.online : apiStatus === 'checking' ? 'Connecting…' : t.offline}</span>
+            </div>
 
             {/* Language Switcher */}
             <div className="flex items-center gap-3 px-2 text-sm font-semibold">
@@ -157,17 +130,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               >
                 हिंदी
               </button>
-            </div>
-
-            {/* User Profile */}
-            <div className="flex items-center gap-3 pl-3 sm:pl-4 border-l border-[#E8E6E1]">
-              <div className="text-right hidden sm:block">
-                <p className="text-xs font-bold text-[#1B2B1F]">Anil Sharma</p>
-                <p className="text-[10px] text-[#5E6660]">Revenue Officer</p>
-              </div>
-              <div className="w-9 h-9 rounded-full bg-[#D6E0D8] border border-[#BDC9BF] flex items-center justify-center text-[#3A5A40] font-bold text-xs shadow-2xs">
-                AS
-              </div>
             </div>
 
           </div>

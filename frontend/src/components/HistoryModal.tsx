@@ -1,7 +1,9 @@
 import React from 'react';
 import { BuildingEntity, Language } from '../types';
 import { translations } from '../data/i18n';
-import { X, History, Clock, UserCheck, ShieldCheck } from 'lucide-react';
+import { X, History } from 'lucide-react';
+import { buildHistory } from '../api/adapter';
+import { shortId } from '../data/sources';
 
 interface HistoryModalProps {
   building: BuildingEntity;
@@ -15,6 +17,7 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
   language,
 }) => {
   const t = translations[language];
+  const history = buildHistory(building);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs animate-in fade-in">
@@ -25,7 +28,7 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
           <div className="flex items-center gap-2">
             <History className="w-5 h-5 text-[#3A5A40]" />
             <h3 className="font-serif font-bold text-[#1B2B1F] text-sm">
-              Audit History Trail • {building.id}
+              Audit trail • #{shortId(building.id)}
             </h3>
           </div>
           <button
@@ -39,7 +42,7 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
         {/* Timeline */}
         <div className="p-6 overflow-y-auto space-y-4 text-xs">
           <div className="relative pl-6 border-l-2 border-[#3A5A40]/30 space-y-6">
-            {building.history.map((log, index) => (
+            {history.map((log, index) => (
               <div key={index} className="relative">
                 <div className="absolute -left-[31px] top-0.5 w-3.5 h-3.5 rounded-full bg-[#3A5A40] border-2 border-white shadow-xs" />
                 <span className="text-[10px] font-mono text-[#A3A9A5] block mb-0.5">{log.date}</span>
@@ -53,6 +56,9 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
               </div>
             ))}
           </div>
+          {history.length === 0 && (
+            <p className="text-[#5E6660]">No events recorded for this entity yet.</p>
+          )}
         </div>
 
         <div className="p-4 border-t border-[#F1F3F0] bg-[#FAF9F6] flex justify-end">

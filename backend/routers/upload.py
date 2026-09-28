@@ -27,6 +27,7 @@ UPLOAD_DIR = PROJECT_ROOT / "data" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_EXTENSIONS = {".geojson", ".json", ".zip"}
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # keep small: the free instance has little memory/disk
 
 
 @router.post("", response_model=UploadResponse)
@@ -36,7 +37,14 @@ async def upload_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
 
     dest = UPLOAD_DIR / f"{uuid.uuid4()}{ext}"
+    written = 0
     with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+        while chunk := await file.read(1024 * 1024):
+            written += len(chunk)
+            if written > MAX_UPLOAD_BYTES:
+                f.close()
+                dest.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail="File too large (max 25 MB)")
+            f.write(chunk)
 
     return UploadResponse(filename=file.filename, stored_path=str(dest), status="received")
