@@ -70,6 +70,19 @@ def get_stats():
             r = cur.fetchone()
 
     result = {
+        # --- legacy key names, kept so any older frontend build keeps working ---
+        "matched_entities": c["multi"],
+        "needs_review_count": c["review"],
+        "sources_distribution": raw,
+        "latest_run": None if r is None else {
+            "id": r["id"],
+            "run_started_at": r["run_started_at"].isoformat() if r["run_started_at"] else None,
+            "run_completed_at": r["run_completed_at"].isoformat() if r["run_completed_at"] else None,
+            "raw_feature_count": r["raw_feature_count"],
+            "canonical_entity_count": r["canonical_entity_count"],
+            "review_queue_count": r["review_queue_count"],
+        },
+        # --- current schema ---
         "total_entities": c["total"],
         "multi_source_entities": c["multi"],
         "single_source_entities": c["single"],

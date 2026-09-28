@@ -19,14 +19,20 @@ import unicodedata
 from pathlib import Path
 
 from datetime import datetime, timezone
-from backend.schema import ResolveRequest, ResolveResponse  # add to your existing schema import line
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 from fastapi import APIRouter, HTTPException, Query
 
 from backend.db import get_connection
-from backend.schema import ClusteredCell, EntityDetail, EntitySummary
+from backend.routers import stats as stats_router
+from backend.schema import (
+    ClusteredCell,
+    EntityDetail,
+    EntitySummary,
+    ResolveRequest,
+    ResolveResponse,
+)
 from config import MATCH_SRID
 
 router = APIRouter(prefix="/entities", tags=["entities"])
@@ -297,4 +303,5 @@ def resolve_entity(canonical_uid: str, body: ResolveRequest):
     if row is None:
         raise HTTPException(status_code=404, detail=f"No entity with canonical_uid={canonical_uid}")
 
+    stats_router.invalidate()  # dashboard counts changed (needs_review / resolved)
     return ResolveResponse(canonical_uid=row["canonical_uid"], resolved_status=body.status)

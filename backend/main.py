@@ -13,13 +13,27 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from backend.db import get_connection
-from backend.routers import entities, review_queue, upload, reconcile
+from backend.routers import entities, review_queue, upload, reconcile, stats
 
 app = FastAPI(title="Geospatial Reconciliation Engine API")
+
+
+@app.middleware("http")
+async def _json_errors(request: Request, call_next):
+    """Turn unhandled exceptions into a JSON 500 *inside* the CORS layer.
+    Without this, a crash in any route reaches the browser as a bare
+    'Failed to fetch' (the error response has no CORS headers), which hides
+    the real cause. Now the Network tab shows the 500 and its detail."""
+    try:
+        return await call_next(request)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content={"detail": f"{type(e).__name__}: {e}"})
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,6 +46,7 @@ app.include_router(entities.router)
 app.include_router(review_queue.router)
 app.include_router(upload.router)
 app.include_router(reconcile.router)
+app.include_router(stats.router)
 
 
 @app.get("/health")
@@ -46,60 +61,6 @@ def health_check():
         return {"status": "ok", "postgis_version": version}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
-
-
-@app.get("/stats")
-def get_stats():
-    """Returns database summary statistics for the LandLens frontend dashboard."""
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT
-                        count(*) AS total_entities,
-                        count(*) FILTER (WHERE source_count > 1) AS matched_entities,
-                        count(*) FILTER (WHERE source_count = 1) AS single_source_entities,
-                        count(*) FILTER (WHERE needs_review = true) AS needs_review_count,
-                        COALESCE(round(avg(confidence_score)::numeric, 4), 0.0) AS avg_confidence
-                    FROM canonical_entities;
-                """)
-                stats = cur.fetchone() or {}
-
-                cur.execute("""
-                    SELECT source, count(*) as count
-                    FROM raw_features
-                    GROUP BY source;
-                """)
-                sources_dist = {r["source"]: r["count"] for r in cur.fetchall()}
-
-                cur.execute("""
-                    SELECT id, bbox, run_started_at, run_completed_at,
-                           raw_feature_count, canonical_entity_count, review_queue_count
-                    FROM pipeline_runs
-                    ORDER BY id DESC LIMIT 1;
-                """)
-                latest_run = cur.fetchone()
-
-        return {
-            "total_entities": stats.get("total_entities", 0),
-            "matched_entities": stats.get("matched_entities", 0),
-            "single_source_entities": stats.get("single_source_entities", 0),
-            "needs_review_count": stats.get("needs_review_count", 0),
-            "avg_confidence": float(stats.get("avg_confidence", 0.0)),
-            "sources_distribution": sources_dist,
-            "latest_run": latest_run,
-        }
-    except Exception as e:
-        return {
-            "total_entities": 0,
-            "matched_entities": 0,
-            "single_source_entities": 0,
-            "needs_review_count": 0,
-            "avg_confidence": 0.0,
-            "sources_distribution": {},
-            "latest_run": None,
-            "error": str(e),
-        }
 
 
 @app.get("/naksha/export")
